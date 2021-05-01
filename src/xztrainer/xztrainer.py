@@ -157,7 +157,7 @@ class XZTrainer(metaclass=ABCMeta):
 
         for i, data in enumerate(tqdm(data_loader)):
             # prepare data
-            data = {k: v.to(self.device) for k, v in data.items()}
+            data = {k: v.to(self.device) if isinstance(v, Tensor) else v for k, v in data.items()}
 
             # do forward pass
             loss, label, pred = self.step(model, data)
@@ -275,7 +275,7 @@ class XZTrainer(metaclass=ABCMeta):
         preds = []
 
         for i, d in enumerate(tqdm(dl)):
-            d = {k: v.to(self.device) for k, v in d.items()}
+            d = {k: v.to(self.device) if isinstance(v, Tensor) else v for k, v in d.items()}
             with torch.no_grad():
                 pred = _convert_model_outputs(self.step_predict(model, d))
             preds.extend(pred)
