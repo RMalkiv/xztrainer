@@ -1,15 +1,10 @@
-import json
-import logging
 import multiprocessing
 import os
-import tempfile
 from abc import ABCMeta, abstractmethod
-from argparse import Namespace
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Tuple, Optional, List, Dict
 
-import deepspeed
 import math
 import numpy as np
 import torch
@@ -19,23 +14,18 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm.notebook import tqdm
 
+from engines.base import XZTrainerEngine, XZTrainerEngineConfig
+
 
 class SchedulerType(Enum):
     STEP = 'step'
     EPOCH = 'epoch'
 
 
-@dataclass
-class DeepSpeedConfig:
-    fp16: bool = True
-    zero: bool = True
-
-
 class SavePolicy(Enum):
     NEVER = 'never'
     LAST_EPOCH = 'last_epoch'
     EVERY_EPOCH = 'every_epoch'
-
 
 
 @dataclass
@@ -56,7 +46,6 @@ class XZTrainerConfig:
     save_policy: SavePolicy = SavePolicy.EVERY_EPOCH
     save_dir: str = 'checkpoint'
     use_tpu: bool = False
-    deepspeed: DeepSpeedConfig = DeepSpeedConfig()
 
 
 def _convert_model_outputs(outs):
@@ -79,8 +68,9 @@ def _convert_model_outputs(outs):
 
 class XZTrainer(metaclass=ABCMeta):
     config: XZTrainerConfig
+    engine: XZTrainerEngine
 
-    def __init__(self, config, model, device=None):
+    def __init__(self, config: XZTrainerConfig, engine_cfg: XZTrainerEngineConfig, model, device=None):
         self.config = config
 
         if device is None:
@@ -89,29 +79,7 @@ class XZTrainer(metaclass=ABCMeta):
 
         self.model = model.to(device)
 
-    def _write_deepspeed_cfg(self) -> str:
-        deepspeed_cfg = {  # todo play with this stuff a bit
-            'zero_allow_untested_optimizer': True,
-            'train_batch_size': self.config.batch_size * self.config.accumulation_steps,
-            'train_micro_batch_size_per_gpu': self.config.batch_size,
-            "fp16": {
-                "enabled": self.config.deepspeed.fp16,
-                "loss_scale": 0,
-                "initial_scale_power": 32,
-                "loss_scale_window": 1000,
-                "hysteresis": 2,
-                "min_loss_scale": 1
-            },
-            'gradient_clipping': 1 if self.config.gradient_clipping else 0,
-            "zero_optimization": {
-                "stage": 2 if self.config.deepspeed.zero else 0,
-            }
-
-        }
-        with tempfile.NamedTemporaryFile('w', delete=False) as f:
-            logging.info(f'Writing DeepSpeed configuration into {f.name}')
-            json.dump(deepspeed_cfg, f)
-            return f.name
+        self.engine = engine_cfg.create_engine(self)
 
     def _create_dataloader(self, data, **kwargs):
         return DataLoader(data, num_workers=self.config.dataloader_num_workers, **kwargs)
@@ -124,18 +92,7 @@ class XZTrainer(metaclass=ABCMeta):
         dataloader = self._create_dataloader(train_data, batch_size=self.config.batch_size, shuffle=self.config.shuffle_train_dataset)
         optim = self.config.optimizer(self.model)
         scheduler, scheduler_type = self.config.scheduler(optim, total_steps) if self.config.scheduler is not None else (None, None)
-        if self.config.deepspeed:
-            deepspeed_cfg = self._write_deepspeed_cfg()
-            model, optim, scheduler_, _ = deepspeed.initialize(
-                args=Namespace(**{'local_rank': 0, 'deepspeed_config': deepspeed_cfg}),
-                model=self.model,
-                optimizer=optim,
-                model_parameters=self.model.parameters(),
-                training_data=None,
-                lr_scheduler=scheduler if scheduler_type == SchedulerType.STEP else None
-            )
-            if scheduler_ is not None:
-                scheduler = scheduler_
+        model, optim, scheduler = self.engine.wrap_model(model, optim, scheduler, scheduler_type)
         return model, optim, dataloader, scheduler, scheduler_type
 
     def calculate_metrics(self, label, predictions):
@@ -165,22 +122,7 @@ class XZTrainer(metaclass=ABCMeta):
             preds.extend(_convert_model_outputs(pred))
 
             # do backward pass
-            if self.config.deepspeed:
-                loss = model.backward(loss)
-                losses[i] = loss.item()
-                if do_train:
-                    model.step()
-            else:
-                loss /= self.config.accumulation_steps
-                losses[i] = loss.item()
-                if do_train:
-                    loss.backward()
-                    if (i + 1) % self.config.accumulation_steps == 0:
-                        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                        optimizer.step()
-                        if scheduler is not None:
-                            scheduler.step()
-                        optimizer.zero_grad()
+            losses[i] = self.engine.backward_pass(do_train, model, optimizer, scheduler, i, loss)
 
             # print metrics, checkpoint the model, etc...
             if do_train:
