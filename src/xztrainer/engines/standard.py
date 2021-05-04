@@ -2,18 +2,17 @@ from dataclasses import dataclass
 
 from torch import nn
 
-from .. import XZTrainer
-from ..engines.base import XZTrainerEngine, XZTrainerEngineConfig
+from .base import XZTrainerEngine, XZTrainerEngineConfig
 
 
 @dataclass
 class StandardEngineConfig(XZTrainerEngineConfig):
-    def create_engine(self, trainer: XZTrainer) -> XZTrainerEngine:
+    def create_engine(self, trainer) -> XZTrainerEngine:
         return StandardEngine(trainer, self)
 
 
 class StandardEngine(XZTrainerEngine):
-    def __init__(self, trainer: XZTrainer, config: StandardEngineConfig):
+    def __init__(self, trainer, config: StandardEngineConfig):
         super().__init__(trainer)
         self.config = config
 

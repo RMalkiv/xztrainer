@@ -14,7 +14,7 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm.notebook import tqdm
 
-from engines.base import XZTrainerEngine, XZTrainerEngineConfig
+from .engines.base import XZTrainerEngine, XZTrainerEngineConfig
 
 
 class SchedulerType(Enum):

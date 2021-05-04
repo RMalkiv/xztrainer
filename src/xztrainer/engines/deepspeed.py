@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 import deepspeed
 
-from .. import XZTrainer, SchedulerType
-from ..engines.base import XZTrainerEngine, XZTrainerEngineConfig
+from .. import SchedulerType
+from .base import XZTrainerEngine, XZTrainerEngineConfig
 
 
 @dataclass
@@ -15,12 +15,12 @@ class DeepSpeedConfig(XZTrainerEngineConfig):
     fp16: bool = True
     zero: bool = True
 
-    def create_engine(self, trainer: XZTrainer) -> XZTrainerEngine:
+    def create_engine(self, trainer) -> XZTrainerEngine:
         return DeepSpeedEngine(trainer, self)
 
 
 class DeepSpeedEngine(XZTrainerEngine):
-    def __init__(self, trainer: XZTrainer, config: DeepSpeedConfig):
+    def __init__(self, trainer, config: DeepSpeedConfig):
         super().__init__(trainer)
         self.config = config
 

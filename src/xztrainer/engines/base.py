@@ -1,10 +1,8 @@
 from abc import ABCMeta, abstractmethod
 
-from .. import XZTrainer
-
 
 class XZTrainerEngine(metaclass=ABCMeta):
-    def __init__(self, trainer: XZTrainer):
+    def __init__(self, trainer):
         self.trainer = trainer
 
     @abstractmethod
@@ -18,5 +16,5 @@ class XZTrainerEngine(metaclass=ABCMeta):
 
 class XZTrainerEngineConfig(metaclass=ABCMeta):
     @abstractmethod
-    def create_engine(self, trainer: XZTrainer) -> XZTrainerEngine:
+    def create_engine(self, trainer) -> XZTrainerEngine:
         pass
