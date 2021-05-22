@@ -107,7 +107,7 @@ class XZTrainer(metaclass=ABCMeta):
         )
 
     def _train_eval(self, do_train, model, optimizer, scheduler, data_loader):
-        model = model.train() if do_train else model.eval()
+        model.train() if do_train else model.eval()
         losses, labels, preds = np.empty(len(data_loader)), [], []
         prefix_len = len(str(len(data_loader)))
         prev_print_len = 0
@@ -160,7 +160,8 @@ class XZTrainer(metaclass=ABCMeta):
         exp_name = self._get_experiment_name()
         print(f"Starting training experiment '{exp_name}'...")
         model, optim, dl_train, scheduler, scheduler_type = self._prepare_training(train_data)
-        dl_val = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
+        if eval_data is not None:
+            dl_val = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
         for epoch in range(self.config.epochs):
             s = f'* Epoch {epoch + 1} / {self.config.epochs}'
             print(s)
@@ -171,8 +172,9 @@ class XZTrainer(metaclass=ABCMeta):
             if self.config.save_policy == SavePolicy.EVERY_EPOCH or (epoch + 1 == self.config.epochs and self.config.save_policy == SavePolicy.LAST_EPOCH):
                 print('Saving model...')
                 self._save(model, exp_name, f'epoch_{epoch + 1}')
-            with torch.no_grad():
-                self._train_eval(False, model, optim, sched, dl_val)
+            if eval_data is not None:
+                with torch.no_grad():
+                    self._train_eval(False, model, optim, sched, dl_val)
 
             if scheduler_type == SchedulerType.EPOCH:
                 scheduler.step()
