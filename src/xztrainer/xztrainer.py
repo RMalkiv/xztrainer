@@ -210,7 +210,7 @@ class XZTrainer(metaclass=ABCMeta):
             print(f"'{checkpoint_file}' file doesn't exist")
             return
         print(f"Loading checkpoint '{checkpoint_file}'")
-        self.model.load_state_dict(torch.load(checkpoint_file))
+        self.model.load_state_dict(torch.load(checkpoint_file, map_location=self.device))
         print("Loaded checkpoint successfully")
 
     def predict(self, data, stop_at=-1, print_predictions=False):
