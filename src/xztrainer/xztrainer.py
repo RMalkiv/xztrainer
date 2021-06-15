@@ -3,7 +3,7 @@ import os
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Tuple, Optional, List, Dict
+from typing import Callable, Tuple, Optional, List, Dict, Any
 
 import math
 import numpy as np
@@ -12,7 +12,8 @@ import torch.nn as nn
 from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from tqdm.notebook import tqdm
+from torch.utils.data.dataloader import default_collate
+from tqdm.auto import tqdm
 
 from .engines.base import XZTrainerEngine, XZTrainerEngineConfig
 
@@ -46,6 +47,7 @@ class XZTrainerConfig:
     save_policy: SavePolicy = SavePolicy.EVERY_EPOCH
     save_dir: str = 'checkpoint'
     use_tpu: bool = False
+    collate_fn: Callable[[List[object]], Any] = default_collate
 
 
 def _convert_model_outputs(outs):
@@ -82,7 +84,7 @@ class XZTrainer(metaclass=ABCMeta):
         self.engine = engine_cfg.create_engine(self)
 
     def _create_dataloader(self, data, **kwargs):
-        return DataLoader(data, num_workers=self.config.dataloader_num_workers, **kwargs)
+        return DataLoader(data, collate_fn=self.config.collate_fn, num_workers=self.config.dataloader_num_workers, **kwargs)
 
     def _prepare_training(self, train_data):
         if self.config.use_tpu:
