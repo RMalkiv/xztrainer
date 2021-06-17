@@ -182,30 +182,30 @@ class XZTrainer(metaclass=ABCMeta):
                 scheduler.step()
         return exp_name
 
-    def load(self, exp_name=None, subdir=None):
+    def load(self, exp_name=None, epoch=None):
         if exp_name is None:
             exp_name = self.config.experiment_name
 
         direct = f'{self.config.save_dir}/{exp_name}'
-        if subdir is None:
+        if epoch is None:
             if not os.path.isdir(direct):
                 print(f"'{direct}' directory doesn't exist")
                 return
-            subdir = -1
+            epoch = -1
             for x in os.listdir(direct):
                 x_dir = f'{direct}/{x}'
                 if os.path.isdir(x_dir):
                     if x.startswith('epoch_'):
                         try:
                             num = int(x[len('epoch_'):])
-                            if num > subdir:
-                                subdir = num
+                            if num > epoch:
+                                epoch = num
                         except ValueError:
                             pass
-            if subdir == -1:
+            if epoch == -1:
                 print(f"'{direct}' directory doesn't contain any suitable checkpoints")
                 return
-            direct = f'{direct}/epoch_{subdir}'
+        direct = f'{direct}/epoch_{epoch}'
 
         checkpoint_file = f'{direct}/model.pt'
         if not os.path.isfile(checkpoint_file):
