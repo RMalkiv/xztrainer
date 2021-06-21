@@ -135,8 +135,9 @@ class XZTrainer(metaclass=ABCMeta):
 
             # print metrics, checkpoint the model, etc...
             if do_train:
-                for group_i, group in enumerate(optimizer.param_groups):
-                    writer.add_scalar(f'Learning Rate/{group_i}', group['lr'], epoch * len(data_loader) + i)
+                if writer is not None:
+                    for group_i, group in enumerate(optimizer.param_groups):
+                        writer.add_scalar(f'Learning Rate/{group_i}', group['lr'], epoch * len(data_loader) + i)
                 if self.config.print_steps > 0 and (i + 1) % self.config.print_steps == 0:
                     metrics = self._get_metrics(np.mean(losses[i - self.config.print_steps + 1:i + 1]), labels[prev_print_len:], preds[prev_print_len:])
                     self._print_metrics(f'[{i + 1:>{prefix_len}}]', metrics)
