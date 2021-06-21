@@ -13,6 +13,7 @@ from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from torch.utils.data.dataloader import default_collate
+from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
 from .engines.base import XZTrainerEngine, XZTrainerEngineConfig
@@ -47,6 +48,7 @@ class XZTrainerConfig:
     save_policy: SavePolicy = SavePolicy.EVERY_EPOCH
     save_dir: str = 'checkpoint'
     collate_fn: Callable[[List[object]], Any] = default_collate
+    use_tensorboard: bool = True
 
 
 def _convert_model_outputs(outs):
@@ -97,15 +99,23 @@ class XZTrainer(metaclass=ABCMeta):
     def calculate_metrics(self, label, predictions):
         return {k: v(label, predictions) for k, v in self.config.metrics.items()}
 
-    def _print_metrics(self, prefix, loss, label, predictions):
+    def _get_metrics(self, loss, label, predictions):
         results = self.calculate_metrics(label, predictions)
         results['Loss'] = loss
+        return results
+
+    def _print_metrics(self, prefix, results):
         print(
             f'{prefix}',
             *[f'{k}: {v:10.4f}' for k, v in results.items()]
         )
 
-    def _train_eval(self, do_train, model, optimizer, scheduler, data_loader):
+    def _log_metrics(self, writer, metrics, tag, step):
+        if writer is not None:
+            for metric, metric_val in metrics.items():
+                writer.add_scalar(f'{metric}/{tag}', metric_val, step)
+
+    def _train_eval(self, do_train, model, optimizer, scheduler, data_loader, epoch, writer: SummaryWriter):
         model.train() if do_train else model.eval()
         losses, labels, preds = np.empty(len(data_loader)), [], []
         prefix_len = len(str(len(data_loader)))
@@ -126,11 +136,15 @@ class XZTrainer(metaclass=ABCMeta):
             # print metrics, checkpoint the model, etc...
             if do_train:
                 if self.config.print_steps > 0 and (i + 1) % self.config.print_steps == 0:
-                    self._print_metrics(f'[{i + 1:>{prefix_len}}]', np.mean(losses[i - self.config.print_steps + 1:i + 1]), labels[prev_print_len:], preds[prev_print_len:])
+                    metrics = self._get_metrics(np.mean(losses[i - self.config.print_steps + 1:i + 1]), labels[prev_print_len:], preds[prev_print_len:])
+                    self._print_metrics(f'[{i + 1:>{prefix_len}}]', metrics)
+                    self._log_metrics(writer, metrics, 'train', epoch * len(data_loader) + i)
                     prev_print_len = len(labels)
 
         # print metrics, checkpoint the model, etc...
-        self._print_metrics(f'[{"=" * prefix_len}]', np.mean(losses), labels, preds)
+        metrics = self._get_metrics(np.mean(losses), labels, preds)
+        self._print_metrics(f'[{"=" * prefix_len}]', metrics)
+        self._log_metrics(writer, metrics, 'train_epoch' if do_train else 'val', epoch)
         return losses, labels, preds
 
     def _get_experiment_name(self):
@@ -141,7 +155,7 @@ class XZTrainer(metaclass=ABCMeta):
             i += 1
         return edir_[len(self.config.save_dir) + 1:]
 
-    def _save(self, model, exp_name, subdir):
+    def _save(self, model: nn.Module, exp_name: str, subdir: str):
         # TODO: saving optimizer state for further training
         edir = f'{self.config.save_dir}/{exp_name}/{subdir}'
         os.makedirs(edir, exist_ok=True)
@@ -161,22 +175,24 @@ class XZTrainer(metaclass=ABCMeta):
         model, optim, dl_train, scheduler, scheduler_type = self._prepare_training(train_data)
         if eval_data is not None:
             dl_val = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
+        writer = SummaryWriter(log_dir=f'runs/{exp_name}', flush_secs=30) if self.config.use_tensorboard else None
         for epoch in range(self.config.epochs):
             s = f'* Epoch {epoch + 1} / {self.config.epochs}'
             print(s)
             print('=' * len(s))
-            # TODO: SAVING THE MODEL
             sched = scheduler if scheduler_type == SchedulerType.STEP else None
-            self._train_eval(True, model, optim, sched, dl_train)
+            self._train_eval(True, model, optim, sched, dl_train, epoch, writer)
             if self.config.save_policy == SavePolicy.EVERY_EPOCH or (epoch + 1 == self.config.epochs and self.config.save_policy == SavePolicy.LAST_EPOCH):
                 print('Saving model...')
                 self._save(model, exp_name, f'epoch_{epoch + 1}')
             if eval_data is not None:
                 with torch.no_grad():
-                    self._train_eval(False, model, optim, sched, dl_val)
+                    self._train_eval(False, model, optim, sched, dl_val, epoch, writer)
 
             if scheduler_type == SchedulerType.EPOCH:
                 scheduler.step()
+        if writer is not None:
+            writer.close()
         return exp_name
 
     def load(self, exp_name=None, epoch=None):
