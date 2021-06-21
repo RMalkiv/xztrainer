@@ -46,7 +46,6 @@ class XZTrainerConfig:
     print_steps: int = 100
     save_policy: SavePolicy = SavePolicy.EVERY_EPOCH
     save_dir: str = 'checkpoint'
-    use_tpu: bool = False
     collate_fn: Callable[[List[object]], Any] = default_collate
 
 
@@ -87,8 +86,6 @@ class XZTrainer(metaclass=ABCMeta):
         return DataLoader(data, collate_fn=self.config.collate_fn, num_workers=self.config.dataloader_num_workers, **kwargs)
 
     def _prepare_training(self, train_data):
-        if self.config.use_tpu:
-            raise NotImplementedError("TPU training currently isn't available, sorry guys :(")
         model = self.model
         total_steps = int(math.ceil(len(train_data) / self.config.batch_size)) // self.config.accumulation_steps * self.config.epochs
         dataloader = self._create_dataloader(train_data, batch_size=self.config.batch_size, shuffle=self.config.shuffle_train_dataset)
