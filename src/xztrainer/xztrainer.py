@@ -141,7 +141,7 @@ class XZTrainer(metaclass=ABCMeta):
                         writer.add_scalar(f'Learning Rate/{group_i}', group['lr'], epoch * len(data_loader) + i)
                 if self.config.print_steps > 0 and (i + 1) % self.config.print_steps == 0:
                     metrics = self._get_metrics(
-                        np.mean(losses[prev_print_loss]),
+                        np.mean(losses[prev_print_loss:]),
                         labels[prev_print_label:],
                         preds[prev_print_pred:]
                     )
