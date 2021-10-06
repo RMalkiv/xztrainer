@@ -129,7 +129,7 @@ class XZTrainer(metaclass=ABCMeta):
             loss, label, pred = self.step(model, data)
             labels.extend(_convert_model_outputs(label))
             preds.extend(_convert_model_outputs(pred))
-            losses.append(loss)
+            losses.append(loss.item())
 
             # do backward pass
             self.engine.backward_pass(do_train, model, optimizer, scheduler, i, loss)
