@@ -117,9 +117,9 @@ class XZTrainer(metaclass=ABCMeta):
 
     def _train_eval(self, do_train, model, optimizer, scheduler, data_loader, epoch, writer: SummaryWriter):
         model.train() if do_train else model.eval()
-        losses, labels, preds = np.empty(len(data_loader)), [], []
+        losses, labels, preds = [], [], []
         prefix_len = len(str(len(data_loader)))
-        prev_print_len = 0
+        prev_print_loss = prev_print_label = prev_print_pred = 0
 
         for i, data in enumerate(tqdm(data_loader)):
             # prepare data
@@ -129,9 +129,10 @@ class XZTrainer(metaclass=ABCMeta):
             loss, label, pred = self.step(model, data)
             labels.extend(_convert_model_outputs(label))
             preds.extend(_convert_model_outputs(pred))
+            losses.append(loss)
 
             # do backward pass
-            losses[i] = self.engine.backward_pass(do_train, model, optimizer, scheduler, i, loss)
+            self.engine.backward_pass(do_train, model, optimizer, scheduler, i, loss)
 
             # print metrics, checkpoint the model, etc...
             if do_train:
@@ -139,10 +140,16 @@ class XZTrainer(metaclass=ABCMeta):
                     for group_i, group in enumerate(optimizer.param_groups):
                         writer.add_scalar(f'Learning Rate/{group_i}', group['lr'], epoch * len(data_loader) + i)
                 if self.config.print_steps > 0 and (i + 1) % self.config.print_steps == 0:
-                    metrics = self._get_metrics(np.mean(losses[i - self.config.print_steps + 1:i + 1]), labels[prev_print_len:], preds[prev_print_len:])
+                    metrics = self._get_metrics(
+                        np.mean(losses[prev_print_loss]),
+                        labels[prev_print_label:],
+                        preds[prev_print_pred:]
+                    )
                     self._print_metrics(f'[{i + 1:>{prefix_len}}]', metrics)
                     self._log_metrics(writer, metrics, 'train', epoch * len(data_loader) + i)
-                    prev_print_len = len(labels)
+                    prev_print_loss = len(losses)
+                    prev_print_label = len(labels)
+                    prev_print_pred = len(preds)
 
         # print metrics, checkpoint the model, etc...
         metrics = self._get_metrics(np.mean(losses), labels, preds)

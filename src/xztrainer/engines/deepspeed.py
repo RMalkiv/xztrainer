@@ -65,8 +65,6 @@ class DeepSpeedEngine(XZTrainerEngine):
         return model, optim, scheduler
 
     def backward_pass(self, do_train, model, optimizer, scheduler, i, loss):
-        loss = model.backward(loss)
-        itm = loss.item()
+        model.backward(loss)
         if do_train:
             model.step()
-        return itm

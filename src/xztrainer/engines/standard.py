@@ -21,8 +21,7 @@ class StandardEngine(XZTrainerEngine):
 
     def backward_pass(self, do_train, model, optimizer, scheduler, i, loss):
         cfg = self.trainer.config
-        loss /= cfg.accumulation_steps
-        itm = loss.item()
+        loss = loss / cfg.accumulation_steps
         if do_train:
             loss.backward()
             if (i + 1) % cfg.accumulation_steps == 0:
@@ -31,4 +30,3 @@ class StandardEngine(XZTrainerEngine):
                 if scheduler is not None:
                     scheduler.step()
                 optimizer.zero_grad()
-        return itm
