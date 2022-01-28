@@ -1,6 +1,16 @@
+[tool.poetry]
+name = "xztrainer"
+version = "0.1.0"
+description = "A customizable training pipeline for PyTorch"
+authors = ["Maxim Afanasyev <mr.applexz@gmail.com>"]
+license = "MPL-2.0"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+torch = "^1.10.2"
+
+[tool.poetry.dev-dependencies]
+
 [build-system]
-requires = [
-    "setuptools>=42",
-    "wheel"
-]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
