@@ -9,9 +9,9 @@ license = "MPL-2.0"
 python = "^3.8"
 torch = "^1.10.2"
 tqdm = "^4.62.3"
-deepspeed = {version = "^0.5.10", extras = ["deepspeed"], platform = "linux"}
 numpy = "^1.22.1"
-tensorboard = {version = "^2.8.0", extras = ["tensorboard"]}
+deepspeed = {version = "^0.5.10", optional = true, platform = "linux"}
+tensorboard = {version = "^2.8.0", optional = true}
 
 [tool.poetry.dev-dependencies]
 torchvision = "^0.11.3"
@@ -21,3 +21,7 @@ scikit-learn = "^1.0.2"
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.extras]
+tensorboard = ["tensorboard"]
+deepspeed = ["deepspeed"]
