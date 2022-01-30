@@ -1,32 +1,33 @@
 from dataclasses import dataclass
+from typing import Tuple
 
-from torch import nn
+from torch import Tensor
+from torch.nn import Module
+from torch.nn.utils import clip_grad_norm_
+from torch.optim import Optimizer
 
-from .base import XZTrainerEngine, XZTrainerEngineConfig
+from .. import XZTrainer, LRSchedulerProtocol, SchedulerType, TrainContext
+from . import TrainingEngineConfig, TrainingEngine
 
 
 @dataclass
-class StandardEngineConfig(XZTrainerEngineConfig):
-    def create_engine(self, trainer) -> XZTrainerEngine:
-        return StandardEngine(trainer, self)
+class StandardEngineConfig(TrainingEngineConfig):
+    def create_engine(self, trainer: XZTrainer) -> TrainingEngine:
+        return StandardEngine()
 
 
-class StandardEngine(XZTrainerEngine):
-    def __init__(self, trainer, config: StandardEngineConfig):
-        super().__init__(trainer)
-        self.config = config
+class StandardEngine(TrainingEngine):
+    def wrap_model(self, model: Module, optimizer: Optimizer, scheduler: LRSchedulerProtocol,
+                   scheduler_type: SchedulerType) -> Tuple[Module, Optimizer, LRSchedulerProtocol]:
+        return model, optimizer, scheduler
 
-    def wrap_model(self, model, optim, scheduler, scheduler_type):
-        return model, optim, scheduler
-
-    def backward_pass(self, do_train, model, optimizer, scheduler, i, loss):
-        cfg = self.trainer.config
-        loss = loss / cfg.accumulation_steps
-        if do_train:
-            loss.backward()
-            if (i + 1) % cfg.accumulation_steps == 0:
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                if scheduler is not None:
-                    scheduler.step()
-                optimizer.zero_grad()
+    def backward_pass(self, context: TrainContext, batch_i: int, loss: Tensor):
+        loss = loss / context.get_number_of_accumulations(batch_i)
+        # multiple consecutive loss.backward() sum up the gradients, so we need to divide loss by num of accumulations
+        loss.backward()
+        if context.should_do_update_step(batch_i):
+            clip_grad_norm_(context.model.parameters(), max_norm=1.0)
+            context.optimizer.step()
+            if context.scheduler is not None:
+                context.scheduler.step()
+            context.optimizer.zero_grad()

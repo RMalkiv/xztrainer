@@ -1,161 +1,203 @@
-import multiprocessing
-import os
-from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Callable, Tuple, Optional, List, Dict, Any
-
 import math
+import os
+from abc import abstractmethod, ABC
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union
+
 import numpy as np
 import torch
-import torch.nn as nn
 from torch import Tensor
+from torch.nn import Module
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader
-from torch.utils.data.dataloader import default_collate
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from .engines.base import XZTrainerEngine, XZTrainerEngineConfig
+from . import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, SavePolicy
+from .engines import TrainingEngine
+from .logger.base import LoggingEngine, ClassifierType
+
+TModel = TypeVar('TModel', bound=Module)
+
+ModelOutputType = Union[Tensor, List]
 
 
-class SchedulerType(Enum):
-    STEP = 'step'
-    EPOCH = 'epoch'
-
-
-class SavePolicy(Enum):
-    NEVER = 'never'
-    LAST_EPOCH = 'last_epoch'
-    EVERY_EPOCH = 'every_epoch'
+def _convert_model_outputs(out: ModelOutputType) -> List:
+    if isinstance(out, Tensor):
+        return out.detach().tolist()
+    elif isinstance(out, List):
+        return out
+    else:
+        raise ValueError(f'Invalid model output type: {type(out)}')
 
 
 @dataclass
-class XZTrainerConfig:
-    batch_size: int
-    batch_size_eval: int
-    epochs: int
-    optimizer: Callable[[nn.Module], Optimizer]
+class BaseContext(Generic[TModel]):
+    trainer: 'XZTrainer'
+    engine: TrainingEngine
+    logger: LoggingEngine
+    optimizer: Optimizer
+    scheduler: LRSchedulerProtocol
+    data_loader: DataLoader
+    model: Module
+    model_unwrapped: TModel
 
-    experiment_name: str = 'master'
-    gradient_clipping: bool = True
-    metrics: Dict[str, Callable[[List, List], object]] = field(default_factory=dict)
-    scheduler: Optional[Callable[[Optimizer, int], Tuple[object, SchedulerType]]] = None
-    shuffle_train_dataset: bool = False
-    dataloader_num_workers: int = multiprocessing.cpu_count()
-    accumulation_steps: int = 1
-    print_steps: int = 100
-    save_policy: SavePolicy = SavePolicy.EVERY_EPOCH
-    save_dir: str = 'checkpoint'
-    collate_fn: Callable[[List[object]], Any] = default_collate
-    use_tensorboard: bool = True
+    epoch: int
+
+    @property
+    def total_batches_in_epoch(self) -> int:
+        return len(self.data_loader)
 
 
-def _convert_model_outputs(outs):
-    if isinstance(outs, Tensor):
-        outs = outs.detach().tolist()
-    elif isinstance(outs, dict):
-        mp = []
-        for k, v in outs.items():
-            if isinstance(v, Tensor):
-                v = v.detach().tolist()
-            outs[k] = v
-        for i in range(len(outs[next(iter(outs))])):
-            mm = {}
-            for k in outs:
-                mm[k] = outs[k][i]
-            mp.append(mm)
-        outs = mp
-    return outs
+@dataclass
+class TrainContext(BaseContext[TModel]):
+    total_steps: int
+
+    @property
+    def total_steps_in_epoch(self) -> int:
+        return int(math.ceil(len(self.data_loader) / self.trainer.config.accumulation_batches))
+
+    def should_do_update_step(self, batch_i: int) -> bool:
+        is_accumulated = (batch_i + 1) % self.trainer.config.accumulation_batches == 0
+        is_final = (batch_i + 1) == self.total_batches_in_epoch
+        return is_accumulated or is_final
+
+    def get_step_from_batch(self, batch_i: int) -> int:
+        steps_in_epoch = int(math.ceil(self.total_batches_in_epoch / self.trainer.config.accumulation_batches))
+        prev = steps_in_epoch * (self.epoch - 1)
+        return prev + int(math.ceil((batch_i + 1) / self.trainer.config.accumulation_batches))
+
+    def get_number_of_accumulations(self, batch_i: int) -> int:
+        final_accumulations = self.total_batches_in_epoch % self.trainer.config.accumulation_batches
+        if batch_i + 1 <= self.total_steps - final_accumulations:
+            return self.trainer.config.accumulation_batches
+        else:
+            return final_accumulations
 
 
-class XZTrainer(metaclass=ABCMeta):
+@dataclass
+class EvalContext(BaseContext[TModel]):
+    pass
+
+
+class XZTrainable(ABC):
+    @abstractmethod
+    def step(
+            self,
+            context: BaseContext,
+            data: Dict[str, Any]
+    ) -> Tuple[Tensor, Dict[str, ModelOutputType]]:
+        ...
+
+    def calculate_metrics(
+            self,
+            context: BaseContext,
+            model_outputs: Dict[str, List]
+    ) -> Dict[ClassifierType, float]:
+        return {}
+
+    def log(self, context: BaseContext):
+        pass
+
+    def on_update(self, context: TrainContext, step: int):
+        pass
+
+
+class XZTrainer(Generic[TModel]):
     config: XZTrainerConfig
-    engine: XZTrainerEngine
 
-    def __init__(self, config: XZTrainerConfig, engine_cfg: XZTrainerEngineConfig, model, device=None):
+    def __init__(self, config: XZTrainerConfig, model: TModel, trainable: XZTrainable,
+                 device: Optional[torch.device] = None):
         self.config = config
 
         if device is None:
-            device = torch.device('cuda')
+            device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         self.device = device
 
         self.model = model.to(device)
+        self.trainable = trainable
 
-        self.engine = engine_cfg.create_engine(self)
-
-    def _create_dataloader(self, data, **kwargs):
-        return DataLoader(data, collate_fn=self.config.collate_fn, num_workers=self.config.dataloader_num_workers, **kwargs)
-
-    def _prepare_training(self, train_data):
-        model = self.model
-        total_steps = int(math.ceil(len(train_data) / self.config.batch_size)) // self.config.accumulation_steps * self.config.epochs
-        dataloader = self._create_dataloader(train_data, batch_size=self.config.batch_size, shuffle=self.config.shuffle_train_dataset)
-        optim = self.config.optimizer(self.model)
-        scheduler, scheduler_type = self.config.scheduler(optim, total_steps) if self.config.scheduler is not None else (None, None)
-        model, optim, scheduler = self.engine.wrap_model(model, optim, scheduler, scheduler_type)
-        return model, optim, dataloader, scheduler, scheduler_type
-
-    def calculate_metrics(self, label, predictions):
-        return {k: v(label, predictions) for k, v in self.config.metrics.items()}
-
-    def _get_metrics(self, loss, label, predictions):
-        results = self.calculate_metrics(label, predictions)
-        results['Loss'] = loss
-        return results
-
-    def _print_metrics(self, prefix, results):
-        print(
-            f'{prefix}',
-            *[f'{k}: {v:10.4f}' for k, v in results.items()]
+    def _create_dataloader(self, data: Dataset, **kwargs) -> DataLoader:
+        return DataLoader(
+            data,
+            collate_fn=self.config.collate_fn,
+            num_workers=self.config.dataloader_num_workers,
+            **kwargs
         )
 
-    def _log_metrics(self, writer, metrics, tag, step):
-        if writer is not None:
-            for metric, metric_val in metrics.items():
-                writer.add_scalar(f'{metric}/{tag}', metric_val, step)
+    def _log_scalars(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType],
+                     prev_output_lens: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+        if prev_output_lens is not None:
+            model_outputs = {k: v[prev_output_lens:] for k, v in model_outputs}
+        scalars = self.trainable.calculate_metrics(context, model_outputs)
+        scalars['loss'] = float(np.mean(model_outputs['loss']))
+        for k, v in scalars:
+            context.logger.log_scalar(k, v)
+        context.logger.flush()
+        return {k: len(v) for k, v in model_outputs.items()}
 
-    def _train_eval(self, do_train, model, optimizer, scheduler, data_loader, epoch, writer: SummaryWriter):
-        model.train() if do_train else model.eval()
-        losses, labels, preds = [], [], []
-        prefix_len = len(str(len(data_loader)))
-        prev_print_loss = prev_print_label = prev_print_pred = 0
+    def _move_data_to_device(self, data: Dict[str, Any]):
+        return {k: (v.to(self.device) if isinstance(v, Tensor) else v) for k, v in data.items()}
 
-        for i, data in enumerate(tqdm(data_loader)):
-            # prepare data
-            data = {k: v.to(self.device) if isinstance(v, Tensor) else v for k, v in data.items()}
+    def _train_epoch(self, context: TrainContext):
+        context.model.train()
+        context.logger.update_top_classifier(('Step', 'Train'))
 
-            # do forward pass
-            loss, label, pred = self.step(model, data)
-            labels.extend(_convert_model_outputs(label))
-            preds.extend(_convert_model_outputs(pred))
-            losses.append(loss.item())
+        model_outputs = defaultdict(lambda: list())
+        prev_output_lens = defaultdict(lambda: 0)
 
-            # do backward pass
-            self.engine.backward_pass(do_train, model, optimizer, scheduler, i, loss)
+        with tqdm(total=context.total_steps_in_epoch, desc=f'Train > Epoch {context.epoch}') as progress_bar:
+            for batch_i, data in enumerate(context.data_loader):
+                step = context.get_step_from_batch(batch_i)
+                do_update = context.should_do_update_step(batch_i)
 
-            # print metrics, checkpoint the model, etc...
-            if do_train:
-                if writer is not None:
-                    for group_i, group in enumerate(optimizer.param_groups):
-                        writer.add_scalar(f'Learning Rate/{group_i}', group['lr'], epoch * len(data_loader) + i)
-                if self.config.print_steps > 0 and (i + 1) % self.config.print_steps == 0:
-                    metrics = self._get_metrics(
-                        np.mean(losses[prev_print_loss:]),
-                        labels[prev_print_label:],
-                        preds[prev_print_pred:]
-                    )
-                    self._print_metrics(f'[{i + 1:>{prefix_len}}]', metrics)
-                    self._log_metrics(writer, metrics, 'train', epoch * len(data_loader) + i)
-                    prev_print_loss = len(losses)
-                    prev_print_label = len(labels)
-                    prev_print_pred = len(preds)
+                if do_update:
+                    context.logger.update_time_step(step)
 
-        # print metrics, checkpoint the model, etc...
-        metrics = self._get_metrics(np.mean(losses), labels, preds)
-        self._print_metrics(f'[{"=" * prefix_len}]', metrics)
-        self._log_metrics(writer, metrics, 'train_epoch' if do_train else 'val', epoch)
-        return losses, labels, preds
+                data = self._move_data_to_device(data)
+
+                loss, model_outputs = self.trainable.step(context, data)
+                model_outputs['loss'].append(loss.item())
+                for k, v in model_outputs:
+                    model_outputs[k].extend(_convert_model_outputs(v))
+
+                if context.should_do_update_step(batch_i):
+                    for group_i, group in enumerate(context.optimizer.param_groups):
+                        context.logger.log_scalar(['lr', str(group_i)], group['lr'])
+
+                context.engine.backward_pass(context, batch_i, loss)
+
+                if context.should_do_update_step(batch_i):
+                    should_print = (step % self.config.print_steps == 0) or step == context.total_steps_in_epoch
+                    if should_print:
+                        prev_output_lens = self._log_scalars(context, model_outputs, prev_output_lens)
+                    progress_bar.update()
+
+        context.logger.update_top_classifier(('Epoch', 'Train'))
+        context.logger.update_time_step(context.epoch)
+        self._log_scalars(context, model_outputs)
+
+    def _evaluate_epoch(self, context: EvalContext):
+        with torch.no_grad():
+            context.model.eval()
+            context.logger.update_top_classifier(('Step', 'Eval'))
+
+            model_outputs = defaultdict(lambda: list())
+
+            with tqdm(total=context.total_batches_in_epoch, desc=f'Eval > Epoch {context.epoch}') as progress_bar:
+                for data in context.data_loader:
+                    data = self._move_data_to_device(data)
+
+                    loss, model_outputs = self.trainable.step(context, data)
+                    model_outputs['loss'].append(loss.item())
+                    for k, v in model_outputs:
+                        model_outputs[k].extend(_convert_model_outputs(v))
+
+                    progress_bar.update()
+
+            context.logger.update_top_classifier(('Epoch', 'Eval'))
+            context.logger.update_time_step(context.epoch)
+            self._log_scalars(context, model_outputs)
 
     def _get_experiment_name(self):
         edir = edir_ = f'{self.config.save_dir}/{self.config.experiment_name}'
@@ -165,44 +207,94 @@ class XZTrainer(metaclass=ABCMeta):
             i += 1
         return edir_[len(self.config.save_dir) + 1:]
 
-    def _save(self, model: nn.Module, exp_name: str, subdir: str):
+    def _save(self, model: Module, exp_name: str, subdir: str):
         # TODO: saving optimizer state for further training
         edir = f'{self.config.save_dir}/{exp_name}/{subdir}'
         os.makedirs(edir, exist_ok=True)
         torch.save(model.state_dict(), f'{edir}/model.pt')
 
-    @abstractmethod
-    def step(self, model, data):
-        pass
+    def _calculate_total_steps(self, dataset: Dataset):
+        epoch_batches = int(math.ceil(len(dataset) / self.config.batch_size))
+        epoch_steps = int(math.ceil(epoch_batches / self.config.accumulation_batches))
+        return epoch_steps * self.config.epochs
 
-    @abstractmethod
-    def step_predict(self, model, data):
-        pass
-
-    def train(self, train_data, eval_data):
+    def train(self, train_data: Dataset, eval_data: Dataset):
+        engine = self.config.engine.create_engine(self)
         exp_name = self._get_experiment_name()
-        print(f"Starting training experiment '{exp_name}'...")
-        model, optim, dl_train, scheduler, scheduler_type = self._prepare_training(train_data)
-        if eval_data is not None:
-            dl_val = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
-        writer = SummaryWriter(log_dir=f'runs/{exp_name}', flush_secs=30) if self.config.use_tensorboard else None
-        for epoch in range(self.config.epochs):
-            s = f'* Epoch {epoch + 1} / {self.config.epochs}'
-            print(s)
-            print('=' * len(s))
-            sched = scheduler if scheduler_type == SchedulerType.STEP else None
-            self._train_eval(True, model, optim, sched, dl_train, epoch, writer)
-            if self.config.save_policy == SavePolicy.EVERY_EPOCH or (epoch + 1 == self.config.epochs and self.config.save_policy == SavePolicy.LAST_EPOCH):
-                print('Saving model...')
-                self._save(model, exp_name, f'epoch_{epoch + 1}')
-            if eval_data is not None:
-                with torch.no_grad():
-                    self._train_eval(False, model, optim, sched, dl_val, epoch, writer)
+        total_train_steps = self._calculate_total_steps(train_data)
 
-            if scheduler_type == SchedulerType.EPOCH:
-                scheduler.step()
-        if writer is not None:
-            writer.close()
+        print(f"Starting training experiment '{exp_name}' with total {total_train_steps} steps...")
+
+        # Initialize and wrap model, optimizer and scheduler
+        optim = self.config.optimizer(self.model)
+        if self.config.scheduler and self.config.scheduler_type:
+            scheduler = self.config.scheduler(optim, total_train_steps)
+            scheduler_type = self.config.scheduler_type
+        else:
+            scheduler = None
+            scheduler_type = None
+        model, optim, scheduler = engine.wrap_model(self.model, optim, scheduler, scheduler_type)
+
+        # Create DataLoaders
+        train_dl = self._create_dataloader(
+            train_data,
+            batch_size=self.config.batch_size,
+            shuffle=self.config.shuffle_train_dataset
+        )
+        if eval_data:
+            eval_dl = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
+        else:
+            eval_dl = None
+
+        # Run epoch loop
+        with self.config.logger.create_engine(exp_name) as logger:
+            for epoch_i in range(self.config.epochs):
+                epoch = epoch_i + 1
+                s = f'* Epoch {epoch} / {self.config.epochs}'
+                print(s)
+                print('=' * len(s))
+
+                if scheduler_type == SchedulerType.STEP:
+                    _scheduler = scheduler
+                else:
+                    _scheduler = None
+
+                self._train_epoch(
+                    TrainContext[TModel](
+                        trainer=self,
+                        engine=engine,
+                        logger=logger,
+                        optimizer=optim,
+                        scheduler=_scheduler,
+                        data_loader=train_dl,
+                        model=model,
+                        model_unwrapped=self.model,
+                        epoch=epoch,
+                        total_steps=total_train_steps
+                    )
+                )
+
+                if self._should_save(epoch):
+                    print('Saving model...')
+                    self._save(model, exp_name, f'epoch_{epoch}')
+
+                if eval_dl:
+                    self._evaluate_epoch(
+                        EvalContext[TModel](
+                            trainer=self,
+                            engine=engine,
+                            logger=logger,
+                            optimizer=optim,
+                            scheduler=_scheduler,
+                            data_loader=train_dl,
+                            model=model,
+                            model_unwrapped=self.model,
+                            epoch=epoch
+                        )
+                    )
+
+                if scheduler_type == SchedulerType.EPOCH:
+                    scheduler.step()
         return exp_name
 
     def load(self, exp_name=None, epoch=None):
@@ -238,18 +330,13 @@ class XZTrainer(metaclass=ABCMeta):
         self.model.load_state_dict(torch.load(checkpoint_file, map_location=self.device))
         print("Loaded checkpoint successfully")
 
-    def predict(self, data, stop_at=-1, print_predictions=False):
-        dl = self._create_dataloader(data, batch_size=self.config.batch_size_eval)
-        model = self.model.eval()
-        preds = []
-
-        for i, d in enumerate(tqdm(dl)):
-            d = {k: v.to(self.device) if isinstance(v, Tensor) else v for k, v in d.items()}
-            with torch.no_grad():
-                pred = _convert_model_outputs(self.step_predict(model, d))
-            preds.extend(pred)
-            if print_predictions:
-                print(i, *pred)
-            if i == stop_at:
-                break
-        return preds
+    def _should_save(self, epoch: int) -> bool:
+        policy = self.config.save_policy
+        if policy == SavePolicy.EVERY_EPOCH:
+            return True
+        elif policy == SavePolicy.LAST_EPOCH:
+            return epoch == self.config.epochs
+        elif policy == SavePolicy.NEVER:
+            return False
+        else:
+            raise ValueError(f'Illegal SavePolicy: {policy}')
