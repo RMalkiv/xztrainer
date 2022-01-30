@@ -8,8 +8,8 @@ from torch.optim import Optimizer
 from torch.utils.data.dataloader import default_collate
 
 from xztrainer.engine import TrainingEngineConfig
-from xztrainer.logger.base import LoggingEngineConfig
-from xztrainer.logger.null import NullLoggingEngineConfig
+from xztrainer.logger import LoggingEngineConfig
+from xztrainer.logger.stream import StreamLoggingEngineConfig
 
 
 class SchedulerType(Enum):
@@ -47,4 +47,4 @@ class XZTrainerConfig:
     save_policy: SavePolicy = SavePolicy.EVERY_EPOCH
     save_dir: str = 'checkpoint'
     collate_fn: Callable[[List[object]], Any] = default_collate
-    logger: LoggingEngineConfig = NullLoggingEngineConfig()
+    logger: LoggingEngineConfig = StreamLoggingEngineConfig()

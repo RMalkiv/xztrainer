@@ -19,6 +19,7 @@ from .logger import LoggingEngine, ClassifierType
 
 
 ModelOutputType = Union[Tensor, List]
+ModelOutputsType = Dict[str, ModelOutputType]
 DataType = Union[Dict[str, Any], Iterable]
 
 
@@ -62,14 +63,20 @@ class TrainContext(BaseContext):
         is_final = (batch_i + 1) == self.total_batches_in_epoch
         return is_accumulated or is_final
 
+    def should_perform_step_action(self, every_nth_step: int, batch_i: int):
+        local_step = self.get_local_step_from_batch(batch_i)
+        return (local_step % every_nth_step == 0) or local_step == self.total_steps_in_epoch
+
+    def get_local_step_from_batch(self, batch_i: int) -> int:
+        return int(math.ceil((batch_i + 1) / self.trainer.config.accumulation_batches))
+
     def get_step_from_batch(self, batch_i: int) -> int:
         steps_in_epoch = int(math.ceil(self.total_batches_in_epoch / self.trainer.config.accumulation_batches))
-        prev = steps_in_epoch * (self.epoch - 1)
-        return prev + int(math.ceil((batch_i + 1) / self.trainer.config.accumulation_batches))
+        return steps_in_epoch * (self.epoch - 1) + self.get_local_step_from_batch(batch_i)
 
     def get_number_of_accumulations(self, batch_i: int) -> int:
         final_accumulations = self.total_batches_in_epoch % self.trainer.config.accumulation_batches
-        if batch_i + 1 <= self.total_steps - final_accumulations:
+        if batch_i < self.total_batches_in_epoch - final_accumulations:
             return self.trainer.config.accumulation_batches
         else:
             return final_accumulations
@@ -86,7 +93,7 @@ class XZTrainable(ABC):
             self,
             context: BaseContext,
             data: DataType
-    ) -> Tuple[Tensor, Dict[str, ModelOutputType]]:
+    ) -> Tuple[Tensor, ModelOutputsType]:
         ...
 
     def calculate_metrics(
@@ -125,16 +132,18 @@ class XZTrainer:
             **kwargs
         )
 
-    def _log_scalars(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType],
-                     prev_output_lens: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+    def _log_trainable(self, context: BaseContext, model_outputs: ModelOutputsType,
+                       prev_output_lens: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+        new_output_lens = {k: len(v) for k, v in model_outputs.items()}
         if prev_output_lens is not None:
             model_outputs = {k: v[prev_output_lens[k]:] for k, v in model_outputs.items()}
         scalars = self.trainable.calculate_metrics(context, model_outputs)
         scalars['loss'] = float(np.mean(model_outputs['loss']))
         for k, v in scalars.items():
             context.logger.log_scalar(k, v)
+        self.trainable.log(context)
         context.logger.flush()
-        return {k: len(v) for k, v in model_outputs.items()}
+        return new_output_lens
 
     def _move_data_to_device(self, data: DataType) -> DataType:
         if isinstance(data, dict):
@@ -143,6 +152,15 @@ class XZTrainer:
             return tuple(v.to(self.device) if isinstance(v, Tensor) else v for v in data)
         else:
             raise ValueError(f'Invalid data type: {type(data)}')
+
+    def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Tuple[Tensor, ModelOutputsType]:
+        data = self._move_data_to_device(data)
+
+        loss, model_output = self.trainable.step(context, data)
+        model_outputs['loss'].append(loss.item())
+        for k, v in model_output.items():
+            model_outputs[k].extend(_convert_model_outputs(v))
+        return loss, model_output
 
     def _train_epoch(self, context: TrainContext):
         context.model.train()
@@ -159,12 +177,7 @@ class XZTrainer:
                 if do_update:
                     context.logger.update_time_step(step)
 
-                data = self._move_data_to_device(data)
-
-                loss, model_output = self.trainable.step(context, data)
-                model_outputs['loss'].append(loss.item())
-                for k, v in model_output.items():
-                    model_outputs[k].extend(_convert_model_outputs(v))
+                loss, _ = self._forward_pass(context, model_outputs, data)
 
                 if do_update:
                     for group_i, group in enumerate(context.optimizer.param_groups):
@@ -175,14 +188,13 @@ class XZTrainer:
                 if do_update:
                     self.trainable.on_update(context, step)
 
-                    should_print = (step % self.config.print_steps == 0) or step == context.total_steps_in_epoch
-                    if should_print:
-                        prev_output_lens = self._log_scalars(context, model_outputs, prev_output_lens)
+                    if context.should_perform_step_action(self.config.print_steps, batch_i):
+                        prev_output_lens = self._log_trainable(context, model_outputs, prev_output_lens)
                     progress_bar.update()
 
         context.logger.update_top_classifier(('epoch', 'train'))
         context.logger.update_time_step(context.epoch)
-        self._log_scalars(context, model_outputs)
+        self._log_trainable(context, model_outputs)
 
     def _evaluate_epoch(self, context: EvalContext):
         with torch.no_grad():
@@ -192,18 +204,12 @@ class XZTrainer:
 
             with tqdm(total=context.total_batches_in_epoch, desc=f'Eval > Epoch {context.epoch}') as progress_bar:
                 for data in context.data_loader:
-                    data = self._move_data_to_device(data)
-
-                    loss, model_outputs = self.trainable.step(context, data)
-                    model_outputs['loss'].append(loss.item())
-                    for k, v in model_outputs:
-                        model_outputs[k].extend(_convert_model_outputs(v))
-
+                    self._forward_pass(context, model_outputs, data)
                     progress_bar.update()
 
             context.logger.update_top_classifier(('epoch', 'eval'))
             context.logger.update_time_step(context.epoch)
-            self._log_scalars(context, model_outputs)
+            self._log_trainable(context, model_outputs)
 
     def _get_experiment_name(self):
         edir = edir_ = f'{self.config.save_dir}/{self.config.experiment_name}'

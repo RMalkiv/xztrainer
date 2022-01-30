@@ -8,10 +8,10 @@ from . import LoggingEngine, LoggingEngineConfig, ClassifierType, convert_classi
 
 
 class TensorboardLoggingEngine(LoggingEngine):
-    def __init__(self, config: 'TensorboardLoggingEngineConfig'):
+    def __init__(self, experiment_name: str, config: 'TensorboardLoggingEngineConfig'):
         super().__init__()
 
-        self.writer = SummaryWriter(config.output_dir, max_queue=config.max_queue, flush_secs=config.flush_secs)
+        self.writer = SummaryWriter(f'{config.output_dir}/{experiment_name}', max_queue=config.max_queue, flush_secs=config.flush_secs)
 
     def log_scalar(self, classifier: ClassifierType, value: float):
         self.writer.add_scalar('/'.join(self._top_classifier + convert_classifier(classifier)), value, self._time_step)
@@ -31,4 +31,4 @@ class TensorboardLoggingEngineConfig(LoggingEngineConfig):
     max_queue: int = 10
 
     def create_engine(self, experiment_name: str) -> TensorboardLoggingEngine:
-        return TensorboardLoggingEngine(self)
+        return TensorboardLoggingEngine(experiment_name, self)
