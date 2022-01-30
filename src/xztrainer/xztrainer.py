@@ -2,6 +2,7 @@ import math
 import os
 from abc import abstractmethod, ABC
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union, Iterable
 
@@ -146,7 +147,7 @@ class XZTrainer:
         return new_output_lens
 
     def _move_data_to_device(self, data: DataType) -> DataType:
-        if isinstance(data, dict):
+        if isinstance(data, Mapping):
             return {k: (v.to(self.device) if isinstance(v, Tensor) else v) for k, v in data.items()}
         elif isinstance(data, Iterable):
             return tuple(v.to(self.device) if isinstance(v, Tensor) else v for v in data)
