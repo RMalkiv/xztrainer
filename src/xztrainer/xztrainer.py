@@ -14,8 +14,8 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, SavePolicy
-from .engines import TrainingEngine
-from .logger.base import LoggingEngine, ClassifierType
+from .engine import TrainingEngine
+from .logger import LoggingEngine, ClassifierType
 
 
 ModelOutputType = Union[Tensor, List]

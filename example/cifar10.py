@@ -12,7 +12,7 @@ from torchvision.transforms import ToTensor
 
 from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, SavePolicy, XZTrainable, BaseContext, DataType, \
     ModelOutputType, ClassifierType
-from xztrainer.engines.standard import StandardEngineConfig
+from xztrainer.engine.standard import StandardEngineConfig
 from xztrainer.logger.stream import StreamLoggingEngineConfig
 
 if __name__ == '__main__':

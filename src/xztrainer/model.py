@@ -7,7 +7,7 @@ from torch import nn
 from torch.optim import Optimizer
 from torch.utils.data.dataloader import default_collate
 
-from xztrainer.engines import TrainingEngineConfig
+from xztrainer.engine import TrainingEngineConfig
 from xztrainer.logger.base import LoggingEngineConfig
 from xztrainer.logger.null import NullLoggingEngineConfig
 

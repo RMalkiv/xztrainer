@@ -4,7 +4,7 @@ from typing import Optional, Type
 
 from torch.utils.tensorboard import SummaryWriter
 
-from xztrainer.logger.base import LoggingEngine, LoggingEngineConfig, ClassifierType, convert_classifier
+from . import LoggingEngine, LoggingEngineConfig, ClassifierType, convert_classifier
 
 
 class TensorboardLoggingEngine(LoggingEngine):

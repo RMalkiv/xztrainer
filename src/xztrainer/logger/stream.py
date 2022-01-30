@@ -2,7 +2,7 @@ import sys
 from dataclasses import dataclass
 from typing import TextIO, Dict
 
-from xztrainer.logger.base import LoggingEngine, LoggingEngineConfig, convert_classifier, ClassifierType
+from . import LoggingEngine, LoggingEngineConfig, convert_classifier, ClassifierType
 
 
 class StreamLoggingEngine(LoggingEngine):

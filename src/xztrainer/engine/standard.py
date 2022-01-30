@@ -6,7 +6,8 @@ from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 
-from .. import XZTrainer, LRSchedulerProtocol, SchedulerType, TrainContext
+from ..xztrainer import XZTrainer, TrainContext
+from ..model import LRSchedulerProtocol, SchedulerType
 from . import TrainingEngineConfig, TrainingEngine
 
 
