@@ -14,6 +14,9 @@ numpy = "^1.22.1"
 tensorboard = {version = "^2.8.0", extras = ["tensorboard"]}
 
 [tool.poetry.dev-dependencies]
+torchvision = "^0.11.3"
+pytest = "^6.2.5"
+scikit-learn = "^1.0.2"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
