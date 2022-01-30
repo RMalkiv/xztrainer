@@ -27,7 +27,7 @@ DataType = Union[Dict[str, Any], Iterable]
 def _convert_model_outputs(out: ModelOutputType) -> List:
     if isinstance(out, Tensor):
         if out.ndim == 0:
-            return out.item()
+            return [out.item()]
         else:
             return out.detach().tolist()
     elif isinstance(out, List):
