@@ -47,7 +47,7 @@ if __name__ == '__main__':
             epochs=5,
             optimizer=lambda module: AdamW(module.parameters(), lr=1e-3, weight_decay=1e-4),
             engine=StandardEngineConfig(),
-            experiment_name='mnist',
+            experiment_name='cifar10',
             gradient_clipping=1.0,
             scheduler=lambda optimizer, total_steps: OneCycleLR(optimizer, 1e-3, total_steps),
             scheduler_type=SchedulerType.STEP,
