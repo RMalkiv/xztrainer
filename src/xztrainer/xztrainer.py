@@ -3,7 +3,7 @@ import os
 from abc import abstractmethod, ABC
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union
+from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union, Iterable
 
 import numpy as np
 import torch
@@ -13,13 +13,13 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from . import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, SavePolicy
+from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, SavePolicy
 from .engines import TrainingEngine
 from .logger.base import LoggingEngine, ClassifierType
 
-TModel = TypeVar('TModel', bound=Module)
 
 ModelOutputType = Union[Tensor, List]
+DataType = Union[Dict[str, Any], Iterable]
 
 
 def _convert_model_outputs(out: ModelOutputType) -> List:
@@ -32,7 +32,7 @@ def _convert_model_outputs(out: ModelOutputType) -> List:
 
 
 @dataclass
-class BaseContext(Generic[TModel]):
+class BaseContext:
     trainer: 'XZTrainer'
     engine: TrainingEngine
     logger: LoggingEngine
@@ -40,7 +40,7 @@ class BaseContext(Generic[TModel]):
     scheduler: LRSchedulerProtocol
     data_loader: DataLoader
     model: Module
-    model_unwrapped: TModel
+    model_unwrapped: Module
 
     epoch: int
 
@@ -50,7 +50,7 @@ class BaseContext(Generic[TModel]):
 
 
 @dataclass
-class TrainContext(BaseContext[TModel]):
+class TrainContext(BaseContext):
     total_steps: int
 
     @property
@@ -76,7 +76,7 @@ class TrainContext(BaseContext[TModel]):
 
 
 @dataclass
-class EvalContext(BaseContext[TModel]):
+class EvalContext(BaseContext):
     pass
 
 
@@ -85,7 +85,7 @@ class XZTrainable(ABC):
     def step(
             self,
             context: BaseContext,
-            data: Dict[str, Any]
+            data: DataType
     ) -> Tuple[Tensor, Dict[str, ModelOutputType]]:
         ...
 
@@ -103,10 +103,10 @@ class XZTrainable(ABC):
         pass
 
 
-class XZTrainer(Generic[TModel]):
+class XZTrainer:
     config: XZTrainerConfig
 
-    def __init__(self, config: XZTrainerConfig, model: TModel, trainable: XZTrainable,
+    def __init__(self, config: XZTrainerConfig, model: Module, trainable: XZTrainable,
                  device: Optional[torch.device] = None):
         self.config = config
 
@@ -136,8 +136,13 @@ class XZTrainer(Generic[TModel]):
         context.logger.flush()
         return {k: len(v) for k, v in model_outputs.items()}
 
-    def _move_data_to_device(self, data: Dict[str, Any]):
-        return {k: (v.to(self.device) if isinstance(v, Tensor) else v) for k, v in data.items()}
+    def _move_data_to_device(self, data: DataType) -> DataType:
+        if isinstance(data, dict):
+            return {k: (v.to(self.device) if isinstance(v, Tensor) else v) for k, v in data.items()}
+        elif isinstance(data, Iterable):
+            return tuple(v.to(self.device) if isinstance(v, Tensor) else v for v in data)
+        else:
+            raise ValueError(f'Invalid data type: {type(data)}')
 
     def _train_epoch(self, context: TrainContext):
         context.model.train()
@@ -161,13 +166,15 @@ class XZTrainer(Generic[TModel]):
                 for k, v in model_outputs:
                     model_outputs[k].extend(_convert_model_outputs(v))
 
-                if context.should_do_update_step(batch_i):
+                if do_update:
                     for group_i, group in enumerate(context.optimizer.param_groups):
                         context.logger.log_scalar(['lr', str(group_i)], group['lr'])
 
                 context.engine.backward_pass(context, batch_i, loss)
 
-                if context.should_do_update_step(batch_i):
+                if do_update:
+                    self.trainable.on_update(context, step)
+
                     should_print = (step % self.config.print_steps == 0) or step == context.total_steps_in_epoch
                     if should_print:
                         prev_output_lens = self._log_scalars(context, model_outputs, prev_output_lens)
@@ -260,7 +267,7 @@ class XZTrainer(Generic[TModel]):
                     _scheduler = None
 
                 self._train_epoch(
-                    TrainContext[TModel](
+                    TrainContext(
                         trainer=self,
                         engine=engine,
                         logger=logger,
@@ -280,7 +287,7 @@ class XZTrainer(Generic[TModel]):
 
                 if eval_dl:
                     self._evaluate_epoch(
-                        EvalContext[TModel](
+                        EvalContext(
                             trainer=self,
                             engine=engine,
                             logger=logger,

@@ -1,10 +1,15 @@
-from abc import ABCMeta, abstractmethod
-from typing import Tuple
+from __future__ import annotations
 
-from torch import Tensor, Module
+from abc import ABCMeta, abstractmethod
+from typing import Tuple, TYPE_CHECKING
+
+from torch import Tensor
+from torch.nn import Module
 from torch.optim import Optimizer
 
-from .. import XZTrainer, LRSchedulerProtocol, SchedulerType, TrainContext
+if TYPE_CHECKING:
+    from ..xztrainer import XZTrainer, TrainContext
+    from ..model import LRSchedulerProtocol, SchedulerType
 
 
 class TrainingEngine(metaclass=ABCMeta):

@@ -1,7 +1,7 @@
 from abc import ABCMeta, abstractmethod
 from contextlib import AbstractContextManager
-from typing import Union, Iterable
-
+from types import TracebackType
+from typing import Union, Iterable, Optional, Type
 
 ClassifierType = Union[str, Iterable[str]]
 
@@ -33,6 +33,13 @@ class LoggingEngine(AbstractContextManager, metaclass=ABCMeta):
 
     def update_top_classifier(self, classifier: ClassifierType):
         self._top_classifier = convert_classifier(classifier)
+
+    def __enter__(self) -> 'LoggingEngine':
+        return self
+
+    def __exit__(self, __exc_type: Optional[Type[BaseException]], __exc_value: Optional[BaseException],
+                 __traceback: Optional[TracebackType]):
+        pass
 
 
 class LoggingEngineConfig(metaclass=ABCMeta):

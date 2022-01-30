@@ -1,3 +1,6 @@
+from types import TracebackType
+from typing import Optional, Type
+
 from xztrainer.logger.base import LoggingEngine, LoggingEngineConfig, ClassifierType
 
 
