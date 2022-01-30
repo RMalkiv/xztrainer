@@ -19,7 +19,7 @@ class StreamLoggingEngine(LoggingEngine):
         self._buffer_scalar['/'.join(self._top_classifier + convert_classifier(classifier))] = value
 
     def flush(self):
-        scalars = '\t'.join([f'{k}={round(v, self._round_to)}' for k, v in self._buffer_scalar])
+        scalars = '\t'.join([f'{k}={round(v, self._round_to)}' for k, v in self._buffer_scalar.items()])
         print(f'[{self._time_step}] {scalars}', file=self._file)
         self._buffer_scalar.clear()
 
@@ -27,7 +27,7 @@ class StreamLoggingEngine(LoggingEngine):
 @dataclass
 class StreamLoggingEngineConfig(LoggingEngineConfig):
     output: TextIO = sys.stdout
-    round_scalars_to: int = 3
+    round_scalars_to: int = 5
 
     def create_engine(self, experiment_name: str) -> StreamLoggingEngine:
         return StreamLoggingEngine(self)

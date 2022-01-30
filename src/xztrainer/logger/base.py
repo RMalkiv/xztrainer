@@ -10,7 +10,7 @@ def convert_classifier(classifier: ClassifierType) -> Iterable[str]:
     if isinstance(classifier, str):
         return classifier,
     elif isinstance(classifier, Iterable):
-        return classifier
+        return tuple(classifier)
     else:
         raise ValueError(f'Invalid classifier type: {type(classifier)}')
 

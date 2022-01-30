@@ -128,10 +128,10 @@ class XZTrainer:
     def _log_scalars(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType],
                      prev_output_lens: Optional[Dict[str, int]] = None) -> Dict[str, int]:
         if prev_output_lens is not None:
-            model_outputs = {k: v[prev_output_lens:] for k, v in model_outputs}
+            model_outputs = {k: v[prev_output_lens[k]:] for k, v in model_outputs.items()}
         scalars = self.trainable.calculate_metrics(context, model_outputs)
         scalars['loss'] = float(np.mean(model_outputs['loss']))
-        for k, v in scalars:
+        for k, v in scalars.items():
             context.logger.log_scalar(k, v)
         context.logger.flush()
         return {k: len(v) for k, v in model_outputs.items()}
@@ -146,7 +146,7 @@ class XZTrainer:
 
     def _train_epoch(self, context: TrainContext):
         context.model.train()
-        context.logger.update_top_classifier(('Step', 'Train'))
+        context.logger.update_top_classifier(('step', 'train'))
 
         model_outputs = defaultdict(lambda: list())
         prev_output_lens = defaultdict(lambda: 0)
@@ -161,9 +161,9 @@ class XZTrainer:
 
                 data = self._move_data_to_device(data)
 
-                loss, model_outputs = self.trainable.step(context, data)
+                loss, model_output = self.trainable.step(context, data)
                 model_outputs['loss'].append(loss.item())
-                for k, v in model_outputs:
+                for k, v in model_output.items():
                     model_outputs[k].extend(_convert_model_outputs(v))
 
                 if do_update:
@@ -180,14 +180,13 @@ class XZTrainer:
                         prev_output_lens = self._log_scalars(context, model_outputs, prev_output_lens)
                     progress_bar.update()
 
-        context.logger.update_top_classifier(('Epoch', 'Train'))
+        context.logger.update_top_classifier(('epoch', 'train'))
         context.logger.update_time_step(context.epoch)
         self._log_scalars(context, model_outputs)
 
     def _evaluate_epoch(self, context: EvalContext):
         with torch.no_grad():
             context.model.eval()
-            context.logger.update_top_classifier(('Step', 'Eval'))
 
             model_outputs = defaultdict(lambda: list())
 
@@ -202,7 +201,7 @@ class XZTrainer:
 
                     progress_bar.update()
 
-            context.logger.update_top_classifier(('Epoch', 'Eval'))
+            context.logger.update_top_classifier(('epoch', 'eval'))
             context.logger.update_time_step(context.epoch)
             self._log_scalars(context, model_outputs)
 
