@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Tuple
 
+import torch
 from torch import Tensor
 from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
@@ -27,6 +28,11 @@ class StandardEngine(TrainingEngine):
         # multiple consecutive loss.backward() sum up the gradients, so we need to divide loss by num of accumulations
         loss.backward()
         if context.should_do_update_step(batch_i):
+            l2_grad_norm = torch.norm(
+                torch.stack([torch.norm(p.grad.detach(), 2.0) for p in context.model.parameters()]),
+                2
+            ).item()
+            context.logger.log_scalar('l2 grad norm', l2_grad_norm)
             clip_grad_norm_(context.model.parameters(), max_norm=1.0)
             context.optimizer.step()
             if context.scheduler is not None:
