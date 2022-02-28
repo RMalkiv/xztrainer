@@ -302,7 +302,7 @@ class XZTrainer:
                             logger=logger,
                             optimizer=optim,
                             scheduler=_scheduler,
-                            data_loader=train_dl,
+                            data_loader=eval_dl,
                             model=model,
                             model_unwrapped=self.model,
                             epoch=epoch
