@@ -29,7 +29,11 @@ class StandardEngine(TrainingEngine):
         loss.backward()
         if context.should_do_update_step(batch_i):
             l2_grad_norm = torch.norm(
-                torch.stack([torch.norm(p.grad.detach(), 2.0) for p in context.model.parameters()]),
+                torch.stack(
+                    [torch.norm(p.grad.detach(), 2.0)
+                     for p in context.model.parameters()
+                     if p.grad is not None]
+                ),
                 2
             ).item()
             context.logger.log_scalar('l2 grad norm', l2_grad_norm)
