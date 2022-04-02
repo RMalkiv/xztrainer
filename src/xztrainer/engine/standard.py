@@ -36,8 +36,10 @@ class StandardEngine(TrainingEngine):
                 ),
                 2
             ).item()
-            context.logger.log_scalar('l2 grad norm', l2_grad_norm)
-            clip_grad_norm_(context.model.parameters(), max_norm=1.0)
+            context.logger.log_scalar('l2 grad norm before clip', l2_grad_norm)
+            max_norm = context.trainer.config.gradient_clipping
+            if max_norm > 0:
+                clip_grad_norm_(context.model.parameters(), max_norm=max_norm)
             context.optimizer.step()
             if context.scheduler is not None:
                 context.scheduler.step()
