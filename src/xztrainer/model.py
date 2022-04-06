@@ -42,6 +42,8 @@ class XZTrainerConfig:
     scheduler_type: Optional[SchedulerType] = None
     shuffle_train_dataset: bool = False
     dataloader_num_workers: int = multiprocessing.cpu_count()
+    dataloader_pin_memory: bool = True
+    dataloader_persistent_workers: bool = True
     accumulation_batches: int = 1
     print_steps: int = 100
     save_policy: SavePolicy = SavePolicy.EVERY_EPOCH

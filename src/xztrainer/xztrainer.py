@@ -133,6 +133,8 @@ class XZTrainer:
             data,
             collate_fn=self.config.collate_fn,
             num_workers=self.config.dataloader_num_workers,
+            persistent_workers=self.config.dataloader_persistent_workers,
+            pin_memory=self.config.dataloader_pin_memory,
             **kwargs
         )
 
