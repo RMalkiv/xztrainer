@@ -57,6 +57,7 @@ if __name__ == '__main__':
             dataloader_num_workers=8,
             accumulation_batches=4,
             print_steps=10,
+            eval_steps=50,
             save_policy=SavePolicy.EVERY_EPOCH,
             logger=TensorboardLoggingEngineConfig()
             # logger=ComposeLoggingEngineConfig(TensorboardLoggingEngineConfig(), StreamLoggingEngineConfig())
