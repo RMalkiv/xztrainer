@@ -58,10 +58,10 @@ if __name__ == '__main__':
             accumulation_batches=4,
             print_steps=10,
             save_policy=SavePolicy.EVERY_EPOCH,
-            logger=ComposeLoggingEngineConfig(TensorboardLoggingEngineConfig(), StreamLoggingEngineConfig())
+            logger=TensorboardLoggingEngineConfig()
+            # logger=ComposeLoggingEngineConfig(TensorboardLoggingEngineConfig(), StreamLoggingEngineConfig())
         ),
         model=resnet18(pretrained=False, num_classes=10),
         trainable=SimpleTrainable()
     )
     trainer.train(dataset_train, dataset_test)
-    print('test')

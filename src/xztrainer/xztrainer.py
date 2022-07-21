@@ -231,12 +231,8 @@ class XZTrainer:
                         context_eval = EvalContext.from_train_context(context)
                         with torch.no_grad():
                             eval_model_outputs = defaultdict(lambda: list())
-
-                            with tqdm(total=len(context_eval.data_loader),
-                                      desc=f'Eval > Step {step}') as eval_progress:
-                                for eval_data in context.data_loader:
-                                    self._forward_pass(context_eval, eval_model_outputs, eval_data)
-                                    eval_progress.update()
+                            for eval_data in context_eval.data_loader:
+                                self._forward_pass(context_eval, eval_model_outputs, eval_data)
                         self._log_trainable(context, eval_model_outputs)
                         self._set_training_state(context)
 
