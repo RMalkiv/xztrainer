@@ -57,6 +57,7 @@ class BaseContext:
 @dataclass
 class TrainContext(BaseContext):
     total_steps: int
+    evaluate_data_loader: Optional[DataLoader]
 
     @property
     def total_steps_in_epoch(self) -> int:
@@ -68,8 +69,14 @@ class TrainContext(BaseContext):
         return is_accumulated or is_final
 
     def should_perform_step_action(self, every_nth_step: int, batch_i: int):
+        if every_nth_step < 0:
+            return False
         local_step = self.get_local_step_from_batch(batch_i)
-        return (local_step % every_nth_step == 0) or local_step == self.total_steps_in_epoch
+        last_step = local_step == self.total_steps_in_epoch
+        if every_nth_step == 0:
+            return last_step
+        else:
+            return (local_step % every_nth_step == 0) or last_step
 
     def get_local_step_from_batch(self, batch_i: int) -> int:
         return int(math.ceil((batch_i + 1) / self.trainer.config.accumulation_batches))
@@ -88,7 +95,19 @@ class TrainContext(BaseContext):
 
 @dataclass
 class EvalContext(BaseContext):
-    pass
+    @classmethod
+    def from_train_context(cls: 'EvalContext', context: TrainContext):
+        return cls(
+            trainer=context.trainer,
+            engine=context.engine,
+            logger=context.logger,
+            optimizer=context.optimizer,
+            scheduler=context.scheduler,
+            data_loader=context.evaluate_data_loader,
+            model=context.model,
+            model_unwrapped=context.model_unwrapped,
+            epoch=context.epoch
+        )
 
 
 class XZTrainable(ABC):
@@ -168,9 +187,16 @@ class XZTrainer:
             model_outputs[k].extend(_convert_model_outputs(v))
         return loss, model_output
 
-    def _train_epoch(self, context: TrainContext):
+    def _set_training_state(self, context: TrainContext):
         context.model.train()
         context.logger.update_top_classifier(('step', 'train'))
+
+    def _set_evaluating_state(self, context: TrainContext):
+        context.model.eval()
+        context.logger.update_top_classifier(('step', 'eval'))
+
+    def _train_epoch(self, context: TrainContext):
+        self._set_training_state(context)
 
         model_outputs = defaultdict(lambda: list())
         prev_output_lens = defaultdict(lambda: 0)
@@ -196,26 +222,27 @@ class XZTrainer:
 
                     if context.should_perform_step_action(self.config.print_steps, batch_i):
                         prev_output_lens = self._log_trainable(context, model_outputs, prev_output_lens)
+
                     progress_bar.update()
+
+                    if context.evaluate_data_loader and context.should_perform_step_action(self.config.eval_steps,
+                                                                                           batch_i):
+                        self._set_evaluating_state(context)
+                        context_eval = EvalContext.from_train_context(context)
+                        with torch.no_grad():
+                            eval_model_outputs = defaultdict(lambda: list())
+
+                            with tqdm(total=len(context_eval.data_loader),
+                                      desc=f'Eval > Step {step}') as eval_progress:
+                                for eval_data in context.data_loader:
+                                    self._forward_pass(context_eval, eval_model_outputs, eval_data)
+                                    eval_progress.update()
+                        self._log_trainable(context, eval_model_outputs)
+                        self._set_training_state(context)
 
         context.logger.update_top_classifier(('epoch', 'train'))
         context.logger.update_time_step(context.epoch)
         self._log_trainable(context, model_outputs)
-
-    def _evaluate_epoch(self, context: EvalContext):
-        with torch.no_grad():
-            context.model.eval()
-
-            model_outputs = defaultdict(lambda: list())
-
-            with tqdm(total=context.total_batches_in_epoch, desc=f'Eval > Epoch {context.epoch}') as progress_bar:
-                for data in context.data_loader:
-                    self._forward_pass(context, model_outputs, data)
-                    progress_bar.update()
-
-            context.logger.update_top_classifier(('epoch', 'eval'))
-            context.logger.update_time_step(context.epoch)
-            self._log_trainable(context, model_outputs)
 
     def _get_experiment_name(self):
         edir = edir_ = f'{self.config.save_dir}/{self.config.experiment_name}'
@@ -288,28 +315,14 @@ class XZTrainer:
                         model=model,
                         model_unwrapped=self.model,
                         epoch=epoch,
-                        total_steps=total_train_steps
+                        total_steps=total_train_steps,
+                        evaluate_data_loader=eval_dl
                     )
                 )
 
                 if self._should_save(epoch):
                     print('Saving model...')
                     self._save(model, exp_name, f'epoch_{epoch}')
-
-                if eval_dl:
-                    self._evaluate_epoch(
-                        EvalContext(
-                            trainer=self,
-                            engine=engine,
-                            logger=logger,
-                            optimizer=optim,
-                            scheduler=_scheduler,
-                            data_loader=eval_dl,
-                            model=model,
-                            model_unwrapped=self.model,
-                            epoch=epoch
-                        )
-                    )
 
                 if scheduler_type == SchedulerType.EPOCH:
                     scheduler.step()
