@@ -170,13 +170,15 @@ class XZTrainer:
         context.logger.flush()
         return new_output_lens
 
-    def _move_data_to_device(self, data: DataType) -> DataType:
-        if isinstance(data, Mapping):
-            return {k: (v.to(self.device) if isinstance(v, Tensor) else v) for k, v in data.items()}
+    def _move_data_to_device(self, data: Any) -> DataType:
+        if isinstance(data, Tensor):
+            return data.to(self.device)
+        elif isinstance(data, Mapping):
+            return {k: self._move_data_to_device(v) for k, v in data.items()}
         elif isinstance(data, Iterable):
-            return tuple(v.to(self.device) if isinstance(v, Tensor) else v for v in data)
+            return tuple(self._move_data_to_device(v) for v in data)
         else:
-            raise ValueError(f'Invalid data type: {type(data)}')
+            return data
 
     def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Tuple[Tensor, ModelOutputsType]:
         data = self._move_data_to_device(data)
