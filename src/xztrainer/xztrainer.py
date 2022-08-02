@@ -29,7 +29,7 @@ def _convert_model_outputs(out: ModelOutputType) -> List:
         if out.ndim == 0:
             return [out.item()]
         else:
-            return out.detach().tolist()
+            return [x for x in out.detach().cpu().numpy()]
     elif isinstance(out, List):
         return out
     else:
@@ -39,12 +39,16 @@ def _convert_model_outputs(out: ModelOutputType) -> List:
 @dataclass
 class BaseContext:
     trainer: 'XZTrainer'
+    data_loader: DataLoader
+    model: Module
+
+
+@dataclass
+class BaseTrainContext(BaseContext):
     engine: TrainingEngine
     logger: LoggingEngine
     optimizer: Optimizer
     scheduler: LRSchedulerProtocol
-    data_loader: DataLoader
-    model: Module
     model_unwrapped: Module
 
     epoch: int
@@ -55,7 +59,7 @@ class BaseContext:
 
 
 @dataclass
-class TrainContext(BaseContext):
+class TrainContext(BaseTrainContext):
     total_steps: int
     evaluate_data_loader: Optional[DataLoader]
 
@@ -94,7 +98,7 @@ class TrainContext(BaseContext):
 
 
 @dataclass
-class EvalContext(BaseContext):
+class EvalContext(BaseTrainContext):
     @classmethod
     def from_train_context(cls: 'EvalContext', context: TrainContext):
         return cls(
@@ -108,6 +112,10 @@ class EvalContext(BaseContext):
             model_unwrapped=context.model_unwrapped,
             epoch=context.epoch
         )
+
+
+class InferContext(BaseContext):
+    pass
 
 
 class XZTrainable(ABC):
@@ -126,7 +134,7 @@ class XZTrainable(ABC):
     ) -> Dict[ClassifierType, float]:
         return {}
 
-    def log(self, context: BaseContext):
+    def log(self, context: BaseTrainContext):
         pass
 
     def on_update(self, context: TrainContext, step: int):
@@ -157,7 +165,7 @@ class XZTrainer:
             **kwargs
         )
 
-    def _log_trainable(self, context: BaseContext, model_outputs: ModelOutputsType,
+    def _log_trainable(self, context: BaseTrainContext, model_outputs: ModelOutputsType,
                        prev_output_lens: Optional[Dict[str, int]] = None) -> Dict[str, int]:
         new_output_lens = {k: len(v) for k, v in model_outputs.items()}
         if prev_output_lens is not None:
@@ -184,18 +192,21 @@ class XZTrainer:
         data = self._move_data_to_device(data)
 
         loss, model_output = self.trainable.step(context, data)
-        model_outputs['loss'].append(loss.item())
+        if loss is not None:
+            model_outputs['loss'].append(loss.item())
         for k, v in model_output.items():
             model_outputs[k].extend(_convert_model_outputs(v))
         return loss, model_output
 
-    def _set_training_state(self, context: TrainContext):
+    def _set_training_state(self, context: BaseContext):
         context.model.train()
-        context.logger.update_top_classifier(('step', 'train'))
+        if isinstance(context, BaseTrainContext):
+            context.logger.update_top_classifier(('step', 'train'))
 
-    def _set_evaluating_state(self, context: TrainContext):
+    def _set_evaluating_state(self, context: BaseContext):
         context.model.eval()
-        context.logger.update_top_classifier(('step', 'eval'))
+        if isinstance(context, BaseTrainContext):
+            context.logger.update_top_classifier(('step', 'eval'))
 
     def _train_epoch(self, context: TrainContext):
         self._set_training_state(context)
@@ -369,3 +380,27 @@ class XZTrainer:
             return False
         else:
             raise ValueError(f'Illegal SavePolicy: {policy}')
+
+    def infer(
+            self, dataset: Dataset, calculate_metrics: bool = False
+    ) -> Tuple[ModelOutputsType, Dict[ClassifierType, float]]:
+        dataloader = self._create_dataloader(dataset, batch_size=self.config.batch_size_eval)
+        context = InferContext(
+            trainer=self,
+            data_loader=dataloader,
+            model=self.model
+        )
+        self._set_evaluating_state(context)
+        with torch.no_grad():
+            model_outputs = defaultdict(lambda: list())
+            with tqdm(total=len(dataloader), desc=f'Inference') as progress_bar:
+                for data in dataloader:
+                    self._forward_pass(context, model_outputs, data)
+                    progress_bar.update()
+        self._set_training_state(context)
+        if calculate_metrics:
+            metrics = self.trainable.calculate_metrics(context, model_outputs)
+            return model_outputs, metrics
+        else:
+            return model_outputs, {}
+

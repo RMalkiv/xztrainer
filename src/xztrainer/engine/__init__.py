@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
-from typing import Tuple, TYPE_CHECKING
+from typing import Tuple, TYPE_CHECKING, Optional
 
 from torch import Tensor
 from torch.nn import Module
@@ -14,8 +14,9 @@ if TYPE_CHECKING:
 
 class TrainingEngine(metaclass=ABCMeta):
     @abstractmethod
-    def wrap_model(self, model: Module, optimizer: Optimizer, scheduler: LRSchedulerProtocol,
-                   scheduler_type: SchedulerType) -> Tuple[Module, Optimizer, LRSchedulerProtocol]:
+    def wrap_model(self, model: Module, optimizer: Optional[Optimizer],
+                   scheduler: Optional[LRSchedulerProtocol],
+                   scheduler_type: Optional[SchedulerType]) -> Tuple[Module, Optimizer, LRSchedulerProtocol]:
         ...
 
     @abstractmethod

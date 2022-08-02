@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Optional
 
 import torch
 from torch import Tensor
@@ -19,8 +19,9 @@ class StandardEngineConfig(TrainingEngineConfig):
 
 
 class StandardEngine(TrainingEngine):
-    def wrap_model(self, model: Module, optimizer: Optimizer, scheduler: LRSchedulerProtocol,
-                   scheduler_type: SchedulerType) -> Tuple[Module, Optimizer, LRSchedulerProtocol]:
+    def wrap_model(self, model: Module, optimizer: Optional[Optimizer],
+                   scheduler: Optional[LRSchedulerProtocol],
+                   scheduler_type: Optional[SchedulerType]) -> Tuple[Module, Optimizer, LRSchedulerProtocol]:
         return model, optimizer, scheduler
 
     def backward_pass(self, context: TrainContext, batch_i: int, loss: Tensor):
