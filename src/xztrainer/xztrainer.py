@@ -2,7 +2,7 @@ import math
 import os
 from abc import abstractmethod, ABC
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union, Iterable
 
@@ -183,8 +183,12 @@ class XZTrainer:
             return data.to(self.device)
         elif isinstance(data, Mapping):
             return {k: self._move_data_to_device(v) for k, v in data.items()}
-        elif isinstance(data, Iterable):
+        elif isinstance(data, Tuple):
             return tuple(self._move_data_to_device(v) for v in data)
+        elif isinstance(data, List):
+            return [self._move_data_to_device(v) for v in data]
+        elif isinstance(data, Set):
+            return set(self._move_data_to_device(v) for v in data)
         else:
             return data
 
