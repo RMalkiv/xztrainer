@@ -367,6 +367,9 @@ class XZTrainer:
         direct = f'{direct}/epoch_{epoch}'
 
         checkpoint_file = f'{direct}/model.pt'
+        self.load_checkpoint_file(checkpoint_file)
+
+    def load_checkpoint_file(self, checkpoint_file: str):
         if not os.path.isfile(checkpoint_file):
             print(f"'{checkpoint_file}' file doesn't exist")
             return
