@@ -374,7 +374,8 @@ class XZTrainer:
             print(f"'{checkpoint_file}' file doesn't exist")
             return
         print(f"Loading checkpoint '{checkpoint_file}'")
-        self.model.load_state_dict(torch.load(checkpoint_file, map_location=self.device))
+        result = self.model.load_state_dict(torch.load(checkpoint_file, map_location=self.device), strict=False)
+        print(f'Result of loading a checkpoint: {result}')
         print("Loaded checkpoint successfully")
 
     def _should_save(self, epoch: int) -> bool:
