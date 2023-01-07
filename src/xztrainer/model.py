@@ -3,11 +3,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, Callable, List, Optional, Any
 
-from torch import nn
+from torch import nn, dtype
 from torch.optim import Optimizer
 from torch.utils.data.dataloader import default_collate
 
-from xztrainer.engine import TrainingEngineConfig
 from xztrainer.logger import LoggingEngineConfig
 from xztrainer.logger.stream import StreamLoggingEngineConfig
 
@@ -34,8 +33,7 @@ class XZTrainerConfig:
     batch_size_eval: int
     epochs: int
     optimizer: Callable[[nn.Module], Optimizer]
-    engine: TrainingEngineConfig
-
+    amp_dtype: Optional[dtype] = None
     experiment_name: str = 'master'
     gradient_clipping: float = 1.0
     scheduler: Optional[Callable[[Optimizer, int], LRSchedulerProtocol]] = None

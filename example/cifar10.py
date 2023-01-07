@@ -12,7 +12,6 @@ from torchvision.transforms import ToTensor
 
 from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, SavePolicy, XZTrainable, BaseContext, DataType, \
     ModelOutputType, ClassifierType
-from xztrainer.engine.standard import StandardEngineConfig
 from xztrainer.logger.compose import ComposeLoggingEngineConfig
 from xztrainer.logger.stream import StreamLoggingEngineConfig
 from xztrainer.logger.tensorboard import TensorboardLoggingEngineConfig
@@ -44,11 +43,11 @@ if __name__ == '__main__':
 
     trainer = XZTrainer(
         config=XZTrainerConfig(
-            batch_size=128,
+            batch_size=512,
             batch_size_eval=256,
             epochs=10,
             optimizer=lambda module: AdamW(module.parameters(), lr=1e-3, weight_decay=1e-4),
-            engine=StandardEngineConfig(),
+            amp_dtype=torch.float16,
             experiment_name='cifar10',
             gradient_clipping=1.0,
             scheduler=lambda optimizer, total_steps: OneCycleLR(optimizer, 1e-3, total_steps),

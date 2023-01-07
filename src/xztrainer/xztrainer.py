@@ -3,19 +3,21 @@ import os
 from abc import abstractmethod, ABC
 from collections import defaultdict
 from collections.abc import Mapping, Set
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union, Iterable
 
 import numpy as np
 import torch
-from torch import Tensor
+from torch import Tensor, autocast
+from torch.cuda.amp import GradScaler
 from torch.nn import Module
+from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, SavePolicy
-from .engine import TrainingEngine
 from .logger import LoggingEngine, ClassifierType
 
 
@@ -45,8 +47,8 @@ class BaseContext:
 
 @dataclass
 class BaseTrainContext(BaseContext):
-    engine: TrainingEngine
     logger: LoggingEngine
+    scaler: Optional[GradScaler]
     optimizer: Optimizer
     scheduler: LRSchedulerProtocol
     model_unwrapped: Module
@@ -103,9 +105,9 @@ class EvalContext(BaseTrainContext):
     def from_train_context(cls: 'EvalContext', context: TrainContext):
         return cls(
             trainer=context.trainer,
-            engine=context.engine,
             logger=context.logger,
             optimizer=context.optimizer,
+            scaler=context.scaler,
             scheduler=context.scheduler,
             data_loader=context.evaluate_data_loader,
             model=context.model,
@@ -226,13 +228,45 @@ class XZTrainer:
                 if do_update:
                     context.logger.update_time_step(step)
 
-                loss, _ = self._forward_pass(context, model_outputs, data)
+                model_op_ctx = nullcontext() if self.config.amp_dtype is None else autocast(device_type='cuda', dtype=self.config.amp_dtype)
+                with model_op_ctx:
+                    loss, _ = self._forward_pass(context, model_outputs, data)
 
                 if do_update:
                     for group_i, group in enumerate(context.optimizer.param_groups):
                         context.logger.log_scalar(['lr', str(group_i)], group['lr'])
 
-                context.engine.backward_pass(context, batch_i, loss)
+                # engine start
+                with model_op_ctx:
+                    loss = loss / context.get_number_of_accumulations(batch_i)
+                if context.scaler is not None:
+                    loss = context.scaler.scale(loss)
+                # multiple consecutive loss.backward() sum up the gradients, so we need to divide loss by num of accumulations
+                loss.backward()
+                if do_update:
+                    if context.scaler is not None:
+                        context.scaler.unscale_(context.optimizer)
+                    l2_grad_norm = torch.norm(
+                        torch.stack(
+                            [torch.norm(p.grad.detach(), 2.0)
+                             for p in context.model.parameters()
+                             if p.grad is not None]
+                        ),
+                        2
+                    ).item()
+                    context.logger.log_scalar('l2 grad norm before clip', l2_grad_norm)
+                    max_norm = context.trainer.config.gradient_clipping
+                    if max_norm > 0:
+                        clip_grad_norm_(context.model.parameters(), max_norm=max_norm)
+                    if context.scaler is not None:
+                        context.scaler.step(context.optimizer)
+                        context.scaler.update()
+                    else:
+                        context.optimizer.step()
+                    if context.scheduler is not None:
+                        context.scheduler.step()
+                    context.optimizer.zero_grad()
+                # engine end
 
                 if do_update:
                     self.trainable.on_update(context, step)
@@ -277,7 +311,6 @@ class XZTrainer:
         return epoch_steps * self.config.epochs
 
     def train(self, train_data: Dataset, eval_data: Dataset):
-        engine = self.config.engine.create_engine(self)
         exp_name = self._get_experiment_name()
         total_train_steps = self._calculate_total_steps(train_data)
 
@@ -285,13 +318,17 @@ class XZTrainer:
 
         # Initialize and wrap model, optimizer and scheduler
         optim = self.config.optimizer(self.model)
+        if self.config.amp_dtype is not None:
+            scaler = GradScaler()
+        else:
+            scaler = None
         if self.config.scheduler and self.config.scheduler_type:
             scheduler = self.config.scheduler(optim, total_train_steps)
             scheduler_type = self.config.scheduler_type
         else:
             scheduler = None
             scheduler_type = None
-        model, optim, scheduler = engine.wrap_model(self.model, optim, scheduler, scheduler_type)
+        model = self.model
 
         # Create DataLoaders
         train_dl = self._create_dataloader(
@@ -320,9 +357,9 @@ class XZTrainer:
                 self._train_epoch(
                     TrainContext(
                         trainer=self,
-                        engine=engine,
                         logger=logger,
                         optimizer=optim,
+                        scaler=scaler,
                         scheduler=_scheduler,
                         data_loader=train_dl,
                         model=model,
