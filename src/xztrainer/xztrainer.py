@@ -1,10 +1,10 @@
 import math
-import os
 from abc import abstractmethod, ABC
 from collections import defaultdict
 from collections.abc import Mapping, Set
 from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union, Iterable
 
 import numpy as np
@@ -17,9 +17,9 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, SavePolicy
+from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
 from .logger import LoggingEngine, ClassifierType
-
+from .sampler import ReusableSequentialSampler
 
 ModelOutputType = Union[Tensor, List]
 ModelOutputsType = Dict[str, ModelOutputType]
@@ -41,6 +41,7 @@ def _convert_model_outputs(out: ModelOutputType) -> List:
 @dataclass
 class BaseContext:
     trainer: 'XZTrainer'
+    dataset_batches: int
     data_loader: DataLoader
     model: Module
 
@@ -57,19 +58,21 @@ class BaseTrainContext(BaseContext):
 
     @property
     def total_batches_in_epoch(self) -> int:
-        return len(self.data_loader)
+        return self.dataset_batches
 
 
 @dataclass
 class TrainContext(BaseTrainContext):
     total_steps: int
+    shift_batch_i: int
     evaluate_data_loader: Optional[DataLoader]
 
     @property
     def total_steps_in_epoch(self) -> int:
-        return int(math.ceil(len(self.data_loader) / self.trainer.config.accumulation_batches))
+        return int(math.ceil(self.dataset_batches / self.trainer.config.accumulation_batches))
 
     def should_do_update_step(self, batch_i: int) -> bool:
+        batch_i = batch_i + self.shift_batch_i
         is_accumulated = (batch_i + 1) % self.trainer.config.accumulation_batches == 0
         is_final = (batch_i + 1) == self.total_batches_in_epoch
         return is_accumulated or is_final
@@ -85,6 +88,7 @@ class TrainContext(BaseTrainContext):
             return (local_step % every_nth_step == 0) or last_step
 
     def get_local_step_from_batch(self, batch_i: int) -> int:
+        batch_i = batch_i + self.shift_batch_i
         return int(math.ceil((batch_i + 1) / self.trainer.config.accumulation_batches))
 
     def get_step_from_batch(self, batch_i: int) -> int:
@@ -92,6 +96,7 @@ class TrainContext(BaseTrainContext):
         return steps_in_epoch * (self.epoch - 1) + self.get_local_step_from_batch(batch_i)
 
     def get_number_of_accumulations(self, batch_i: int) -> int:
+        batch_i = batch_i + self.shift_batch_i
         final_accumulations = self.total_batches_in_epoch % self.trainer.config.accumulation_batches
         if batch_i < self.total_batches_in_epoch - final_accumulations:
             return self.trainer.config.accumulation_batches
@@ -112,7 +117,8 @@ class EvalContext(BaseTrainContext):
             data_loader=context.evaluate_data_loader,
             model=context.model,
             model_unwrapped=context.model_unwrapped,
-            epoch=context.epoch
+            epoch=context.epoch,
+            dataset_batches=context.dataset_batches
         )
 
 
@@ -286,32 +292,55 @@ class XZTrainer:
                                 self._forward_pass(context_eval, eval_model_outputs, eval_data)
                         self._log_trainable(context, eval_model_outputs)
                         self._set_training_state(context)
+                    if context.should_perform_step_action(self.config.save_steps, batch_i):
+                        self._save(context, step)
 
         context.logger.update_top_classifier(('epoch', 'train'))
         context.logger.update_time_step(context.epoch)
         self._log_trainable(context, model_outputs)
 
-    def _get_experiment_name(self):
-        edir = edir_ = f'{self.config.save_dir}/{self.config.experiment_name}'
-        i = 1
-        while os.path.isdir(edir_):
-            edir_ = f'{edir}_{i}'
-            i += 1
-        return edir_[len(self.config.save_dir) + 1:]
+    def _save(self, context: TrainContext, step: int):
+        save_dir = Path(self.config.save_dir) / self.config.experiment_name
+        save_dir.mkdir(exist_ok=True)
+        save_path = save_dir / f'save-{step}.pt'
+        save_obj = {
+            'model': context.model.state_dict(),
+            'optimizer': context.optimizer.state_dict(),
+            'scaler': context.scaler.state_dict() if context.scaler is not None else None,
+            'scheduler': context.scheduler.state_dict(),
+            'saved_at_step': step
+        }
+        torch.save(save_obj, str(save_path))
 
-    def _save(self, model: Module, exp_name: str, subdir: str):
-        # TODO: saving optimizer state for further training
-        edir = f'{self.config.save_dir}/{exp_name}/{subdir}'
-        os.makedirs(edir, exist_ok=True)
-        torch.save(model.state_dict(), f'{edir}/model.pt')
+    def _load(self, step: int) -> Optional[Dict[str, Any]]:
+        save_dir = Path(self.config.save_dir) / self.config.experiment_name
+        if step == -1:
+            if save_dir.is_dir():
+                save_files = [x for x in save_dir.glob('save-+([0-9]).pt')]
+                if len(save_files) == 0:
+                    return None
+                else:
+                    save_file = max(save_files, key=lambda x: int(x.stem.split('-')[1]))
+            else:
+                return None
+        else:
+            save_file = save_dir / f'save-{step}.pt'
+        print(f'Loading state from {save_file}')
+        return torch.load(save_file, map_location=self.device)
+
+    def _calculate_batches_in_epoch(self, dataset: Dataset):
+        return int(math.ceil(len(dataset) / self.config.batch_size))
+
+    def _calculate_steps_in_epoch(self, dataset: Dataset):
+        return int(math.ceil(self._calculate_batches_in_epoch(dataset) / self.config.accumulation_batches))
 
     def _calculate_total_steps(self, dataset: Dataset):
-        epoch_batches = int(math.ceil(len(dataset) / self.config.batch_size))
-        epoch_steps = int(math.ceil(epoch_batches / self.config.accumulation_batches))
-        return epoch_steps * self.config.epochs
+        return self._calculate_steps_in_epoch(dataset) * self.config.epochs
 
-    def train(self, train_data: Dataset, eval_data: Dataset):
-        exp_name = self._get_experiment_name()
+    def train(self, train_data: Dataset, eval_data: Dataset, resume_from: int = -1):
+        exp_name = self.config.experiment_name
+        batches_in_epoch = self._calculate_batches_in_epoch(train_data)
+        steps_in_epoch = self._calculate_steps_in_epoch(train_data)
         total_train_steps = self._calculate_total_steps(train_data)
 
         print(f"Starting training experiment '{exp_name}' with total {total_train_steps} steps...")
@@ -330,20 +359,38 @@ class XZTrainer:
             scheduler_type = None
         model = self.model
 
+        # Load the state
+        state = self._load(resume_from)
+        if state is not None:
+            model.load_state_dict(state['model'])
+            optim.load_state_dict(state['optimizer'])
+            if scaler is not None:
+                scaler.load_state_dict(state['scaler'])
+            scheduler.load_state_dict(state['scheduler'])
+            print(f'Starting from step {state["saved_at_step"]}')
+            start_from_epoch = state['saved_at_step'] // steps_in_epoch
+            shift_batch_i = (state['saved_at_step'] % steps_in_epoch) * self.config.batch_size
+        else:
+            start_from_epoch = 0
+            shift_batch_i = 0
+        del state
+
         # Create DataLoaders
         train_dl = self._create_dataloader(
             train_data,
             batch_size=self.config.batch_size,
-            shuffle=self.config.shuffle_train_dataset
+            sampler=ReusableSequentialSampler(train_data, shift_batch_i)
         )
         if eval_data:
             eval_dl = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
         else:
             eval_dl = None
 
+
+
         # Run epoch loop
         with self.config.logger.create_engine(exp_name) as logger:
-            for epoch_i in range(self.config.epochs):
+            for epoch_i in range(start_from_epoch, self.config.epochs):
                 epoch = epoch_i + 1
                 s = f'* Epoch {epoch} / {self.config.epochs}'
                 print(s)
@@ -366,65 +413,31 @@ class XZTrainer:
                         model_unwrapped=self.model,
                         epoch=epoch,
                         total_steps=total_train_steps,
-                        evaluate_data_loader=eval_dl
+                        evaluate_data_loader=eval_dl,
+                        dataset_batches=batches_in_epoch,
+                        shift_batch_i=shift_batch_i
                     )
                 )
-
-                if self._should_save(epoch):
-                    print('Saving model...')
-                    self._save(model, exp_name, f'epoch_{epoch}')
 
                 if scheduler_type == SchedulerType.EPOCH:
                     scheduler.step()
         return exp_name
 
-    def load(self, exp_name=None, epoch=None):
-        if exp_name is None:
-            exp_name = self.config.experiment_name
-
-        direct = f'{self.config.save_dir}/{exp_name}'
-        if epoch is None:
-            if not os.path.isdir(direct):
-                print(f"'{direct}' directory doesn't exist")
-                return
-            epoch = -1
-            for x in os.listdir(direct):
-                x_dir = f'{direct}/{x}'
-                if os.path.isdir(x_dir):
-                    if x.startswith('epoch_'):
-                        try:
-                            num = int(x[len('epoch_'):])
-                            if num > epoch:
-                                epoch = num
-                        except ValueError:
-                            pass
-            if epoch == -1:
-                print(f"'{direct}' directory doesn't contain any suitable checkpoints")
-                return
-        direct = f'{direct}/epoch_{epoch}'
-
-        checkpoint_file = f'{direct}/model.pt'
-        self.load_checkpoint_file(checkpoint_file)
-
-    def load_checkpoint_file(self, checkpoint_file: str):
+    def load_model_checkpoint(self, checkpoint_file: str, checkpoint_type: CheckpointType):
         if not os.path.isfile(checkpoint_file):
             print(f"'{checkpoint_file}' file doesn't exist")
             return
         print(f"Loading checkpoint '{checkpoint_file}'")
-        result = self.model.load_state_dict(torch.load(checkpoint_file, map_location=self.device), strict=False)
+        checkpoint_obj = torch.load(checkpoint_file, map_location=self.device)
+        if checkpoint_type == CheckpointType.MODEL_ONLY:
+            checkpoint_obj = checkpoint_obj
+        elif checkpoint_type == CheckpointType.XZTRAINER:
+            checkpoint_obj = checkpoint_obj['model']
+        else:
+            raise ValueError(f'invalid checkpoint type: {checkpoint_type}')
+        result = self.model.load_state_dict(checkpoint_obj, strict=False)
         print(f'Result of loading a checkpoint: {result}')
         print("Loaded checkpoint successfully")
-
-    def _should_save(self, epoch: int) -> bool:
-        policy = self.config.save_policy
-        if policy == SavePolicy.EVERY_EPOCH:
-            return True
-        elif policy == SavePolicy.LAST_EPOCH:
-            return epoch == self.config.epochs
-        elif policy == SavePolicy.NEVER:
-            return False
-        else:
-            raise ValueError(f'Illegal SavePolicy: {policy}')
 
     def infer(
             self, dataset: Dataset, calculate_metrics: bool = False

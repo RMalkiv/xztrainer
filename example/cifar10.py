@@ -10,7 +10,7 @@ from torchvision.datasets import CIFAR10
 from torchvision.models import resnet18
 from torchvision.transforms import ToTensor
 
-from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, SavePolicy, XZTrainable, BaseContext, DataType, \
+from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, XZTrainable, BaseContext, DataType, \
     ModelOutputType, ClassifierType
 from xztrainer.logger.compose import ComposeLoggingEngineConfig
 from xztrainer.logger.stream import StreamLoggingEngineConfig
@@ -52,12 +52,11 @@ if __name__ == '__main__':
             gradient_clipping=1.0,
             scheduler=lambda optimizer, total_steps: OneCycleLR(optimizer, 1e-3, total_steps),
             scheduler_type=SchedulerType.STEP,
-            shuffle_train_dataset=True,
+            save_steps=10,
             dataloader_num_workers=8,
             accumulation_batches=4,
             print_steps=10,
             eval_steps=50,
-            save_policy=SavePolicy.EVERY_EPOCH,
             logger=TensorboardLoggingEngineConfig()
             # logger=ComposeLoggingEngineConfig(TensorboardLoggingEngineConfig(), StreamLoggingEngineConfig())
         ),

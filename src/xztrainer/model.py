@@ -16,14 +16,19 @@ class SchedulerType(Enum):
     EPOCH = 'epoch'
 
 
-class SavePolicy(Enum):
-    NEVER = 'never'
-    LAST_EPOCH = 'last_epoch'
-    EVERY_EPOCH = 'every_epoch'
+class CheckpointType(Enum):
+    MODEL_ONLY = 'model_only'
+    XZTRAINER = 'xztrainer'
 
 
 class LRSchedulerProtocol(Protocol):
     def step(self):
+        ...
+
+    def state_dict(self):
+        ...
+
+    def load_state_dict(self, state_dict):
         ...
 
 
@@ -38,14 +43,14 @@ class XZTrainerConfig:
     gradient_clipping: float = 1.0
     scheduler: Optional[Callable[[Optimizer, int], LRSchedulerProtocol]] = None
     scheduler_type: Optional[SchedulerType] = None
-    shuffle_train_dataset: bool = False
     dataloader_num_workers: int = multiprocessing.cpu_count()
     dataloader_pin_memory: bool = True
     dataloader_persistent_workers: bool = True
     accumulation_batches: int = 1
     print_steps: int = 100
     eval_steps: int = 0
-    save_policy: SavePolicy = SavePolicy.EVERY_EPOCH
+    save_steps: int = 0
+    save_keep_n: int = -1
     save_dir: str = 'checkpoint'
     collate_fn: Callable[[List[object]], Any] = default_collate
     logger: LoggingEngineConfig = StreamLoggingEngineConfig()
