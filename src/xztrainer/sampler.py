@@ -1,18 +1,32 @@
-from typing import Sized, Iterator
+import random
+from typing import Sized, Iterator, List, Optional
 
 from torch.utils.data import Sampler
 
 
 class ReusableSequentialSampler(Sampler[int]):
-    _data_len: int
+    _indices: List[int]
 
-    def __init__(self, data: Sized, start_from_i: int) -> None:
-        super().__init__(data)
-        self._data_len = len(data)
-        self._start_from_i = start_from_i
+    def __init__(self, indices: List[int]) -> None:
+        super().__init__(indices)
+        self._indices = indices
 
     def __iter__(self) -> Iterator[int]:
-        return iter(range(self._start_from_i, self._data_len))
+        return iter(self._indices)
 
     def __len__(self) -> int:
-        return self._data_len - self._start_from_i
+        return len(self._indices)
+
+    def save_state(self, batch_i: int, batch_size: int) -> List[int]:
+        return self._indices[(batch_i + 1) * batch_size:]
+
+    @classmethod
+    def from_state(cls, state: List[int]):
+        return cls(state)
+
+    @classmethod
+    def new(cls, data: Sized, shuffle: bool):
+        indices = list(range(len(data)))
+        if shuffle:
+            random.shuffle(indices)
+        return cls(indices)

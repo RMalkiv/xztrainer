@@ -1,4 +1,6 @@
 import math
+import random
+import re
 from abc import abstractmethod, ABC
 from collections import defaultdict
 from collections.abc import Mapping, Set
@@ -14,7 +16,7 @@ from torch.cuda.amp import GradScaler
 from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from tqdm import tqdm
 
 from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
@@ -65,6 +67,8 @@ class BaseTrainContext(BaseContext):
 class TrainContext(BaseTrainContext):
     total_steps: int
     shift_batch_i: int
+    sampler: ReusableSequentialSampler
+    progress_bar: tqdm
     evaluate_data_loader: Optional[DataLoader]
 
     @property
@@ -72,7 +76,6 @@ class TrainContext(BaseTrainContext):
         return int(math.ceil(self.dataset_batches / self.trainer.config.accumulation_batches))
 
     def should_do_update_step(self, batch_i: int) -> bool:
-        batch_i = batch_i + self.shift_batch_i
         is_accumulated = (batch_i + 1) % self.trainer.config.accumulation_batches == 0
         is_final = (batch_i + 1) == self.total_batches_in_epoch
         return is_accumulated or is_final
@@ -88,15 +91,16 @@ class TrainContext(BaseTrainContext):
             return (local_step % every_nth_step == 0) or last_step
 
     def get_local_step_from_batch(self, batch_i: int) -> int:
-        batch_i = batch_i + self.shift_batch_i
         return int(math.ceil((batch_i + 1) / self.trainer.config.accumulation_batches))
 
     def get_step_from_batch(self, batch_i: int) -> int:
         steps_in_epoch = int(math.ceil(self.total_batches_in_epoch / self.trainer.config.accumulation_batches))
         return steps_in_epoch * (self.epoch - 1) + self.get_local_step_from_batch(batch_i)
 
+    def get_actual_batch_i(self, batch_i: int) -> int:
+        return self.shift_batch_i + batch_i
+
     def get_number_of_accumulations(self, batch_i: int) -> int:
-        batch_i = batch_i + self.shift_batch_i
         final_accumulations = self.total_batches_in_epoch % self.trainer.config.accumulation_batches
         if batch_i < self.total_batches_in_epoch - final_accumulations:
             return self.trainer.config.accumulation_batches
@@ -200,7 +204,8 @@ class XZTrainer:
         else:
             return data
 
-    def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Tuple[Tensor, ModelOutputsType]:
+    def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Tuple[
+        Tensor, ModelOutputsType]:
         data = self._move_data_to_device(data)
 
         loss, model_output = self.trainable.step(context, data)
@@ -222,93 +227,101 @@ class XZTrainer:
 
     def _train_epoch(self, context: TrainContext):
         self._set_training_state(context)
+        context.progress_bar.update(
+            context.get_step_from_batch(context.get_actual_batch_i(0)) - 1 - context.progress_bar.n)
 
         model_outputs = defaultdict(lambda: list())
         prev_output_lens = defaultdict(lambda: 0)
 
-        with tqdm(total=context.total_steps_in_epoch, desc=f'Train > Epoch {context.epoch}') as progress_bar:
-            for batch_i, data in enumerate(context.data_loader):
-                step = context.get_step_from_batch(batch_i)
-                do_update = context.should_do_update_step(batch_i)
+        for batch_i, data in enumerate(context.data_loader):
+            batch_i = context.get_actual_batch_i(batch_i)
+            step = context.get_step_from_batch(batch_i)
+            do_update = context.should_do_update_step(batch_i)
 
-                if do_update:
-                    context.logger.update_time_step(step)
+            if do_update:
+                context.logger.update_time_step(step)
 
-                model_op_ctx = nullcontext() if self.config.amp_dtype is None else autocast(device_type='cuda', dtype=self.config.amp_dtype)
-                with model_op_ctx:
-                    loss, _ = self._forward_pass(context, model_outputs, data)
+            model_op_ctx = nullcontext() if self.config.amp_dtype is None else autocast(device_type='cuda',
+                                                                                        dtype=self.config.amp_dtype)
+            with model_op_ctx:
+                loss, _ = self._forward_pass(context, model_outputs, data)
 
-                if do_update:
-                    for group_i, group in enumerate(context.optimizer.param_groups):
-                        context.logger.log_scalar(['lr', str(group_i)], group['lr'])
+            if do_update:
+                for group_i, group in enumerate(context.optimizer.param_groups):
+                    context.logger.log_scalar(['lr', str(group_i)], group['lr'])
 
-                # engine start
-                with model_op_ctx:
-                    loss = loss / context.get_number_of_accumulations(batch_i)
+            # engine start
+            with model_op_ctx:
+                loss = loss / context.get_number_of_accumulations(batch_i)
+            if context.scaler is not None:
+                loss = context.scaler.scale(loss)
+            # multiple consecutive loss.backward() sum up the gradients, so we need to divide loss by num of accumulations
+            loss.backward()
+            if do_update:
                 if context.scaler is not None:
-                    loss = context.scaler.scale(loss)
-                # multiple consecutive loss.backward() sum up the gradients, so we need to divide loss by num of accumulations
-                loss.backward()
-                if do_update:
-                    if context.scaler is not None:
-                        context.scaler.unscale_(context.optimizer)
-                    l2_grad_norm = torch.norm(
-                        torch.stack(
-                            [torch.norm(p.grad.detach(), 2.0)
-                             for p in context.model.parameters()
-                             if p.grad is not None]
-                        ),
-                        2
-                    ).item()
-                    context.logger.log_scalar('l2 grad norm before clip', l2_grad_norm)
-                    max_norm = context.trainer.config.gradient_clipping
-                    if max_norm > 0:
-                        clip_grad_norm_(context.model.parameters(), max_norm=max_norm)
-                    if context.scaler is not None:
-                        context.scaler.step(context.optimizer)
-                        context.scaler.update()
-                    else:
-                        context.optimizer.step()
-                    if context.scheduler is not None:
-                        context.scheduler.step()
-                    context.optimizer.zero_grad()
-                # engine end
+                    context.scaler.unscale_(context.optimizer)
+                l2_grad_norm = torch.norm(
+                    torch.stack(
+                        [torch.norm(p.grad.detach(), 2.0)
+                         for p in context.model.parameters()
+                         if p.grad is not None]
+                    ),
+                    2
+                ).item()
+                context.logger.log_scalar('l2 grad norm before clip', l2_grad_norm)
+                max_norm = context.trainer.config.gradient_clipping
+                if max_norm > 0:
+                    clip_grad_norm_(context.model.parameters(), max_norm=max_norm)
+                if context.scaler is not None:
+                    context.scaler.step(context.optimizer)
+                    context.scaler.update()
+                else:
+                    context.optimizer.step()
+                if context.scheduler is not None:
+                    context.scheduler.step()
+                context.optimizer.zero_grad()
+            # engine end
 
-                if do_update:
-                    self.trainable.on_update(context, step)
+            if do_update:
+                self.trainable.on_update(context, step)
 
-                    if context.should_perform_step_action(self.config.print_steps, batch_i):
-                        prev_output_lens = self._log_trainable(context, model_outputs, prev_output_lens)
+                if context.should_perform_step_action(self.config.print_steps, batch_i):
+                    prev_output_lens = self._log_trainable(context, model_outputs, prev_output_lens)
 
-                    progress_bar.update()
+                if context.evaluate_data_loader and context.should_perform_step_action(self.config.eval_steps,
+                                                                                       batch_i):
+                    self._set_evaluating_state(context)
+                    context_eval = EvalContext.from_train_context(context)
+                    with torch.no_grad():
+                        eval_model_outputs = defaultdict(lambda: list())
+                        for eval_data in context_eval.data_loader:
+                            self._forward_pass(context_eval, eval_model_outputs, eval_data)
+                    self._log_trainable(context, eval_model_outputs)
+                    self._set_training_state(context)
+                if context.should_perform_step_action(self.config.save_steps, batch_i):
+                    self._save(context, step, batch_i)
+                context.progress_bar.update()
 
-                    if context.evaluate_data_loader and context.should_perform_step_action(self.config.eval_steps,
-                                                                                           batch_i):
-                        self._set_evaluating_state(context)
-                        context_eval = EvalContext.from_train_context(context)
-                        with torch.no_grad():
-                            eval_model_outputs = defaultdict(lambda: list())
-                            for eval_data in context_eval.data_loader:
-                                self._forward_pass(context_eval, eval_model_outputs, eval_data)
-                        self._log_trainable(context, eval_model_outputs)
-                        self._set_training_state(context)
-                    if context.should_perform_step_action(self.config.save_steps, batch_i):
-                        self._save(context, step)
+        if len(context.data_loader) > 0:
+            context.logger.update_top_classifier(('epoch', 'train'))
+            context.logger.update_time_step(context.epoch)
+            self._log_trainable(context, model_outputs)
 
-        context.logger.update_top_classifier(('epoch', 'train'))
-        context.logger.update_time_step(context.epoch)
-        self._log_trainable(context, model_outputs)
-
-    def _save(self, context: TrainContext, step: int):
+    def _save(self, context: TrainContext, step: int, batch_i: int):
         save_dir = Path(self.config.save_dir) / self.config.experiment_name
-        save_dir.mkdir(exist_ok=True)
+        save_dir.mkdir(exist_ok=True, parents=True)
         save_path = save_dir / f'save-{step}.pt'
         save_obj = {
             'model': context.model.state_dict(),
             'optimizer': context.optimizer.state_dict(),
             'scaler': context.scaler.state_dict() if context.scaler is not None else None,
             'scheduler': context.scheduler.state_dict(),
-            'saved_at_step': step
+            'epoch': context.epoch,
+            'batch_i_saved_at': batch_i,
+            'sampler': context.sampler.save_state(batch_i, self.config.batch_size),
+            'rng_state_torch': torch.get_rng_state(),
+            'rng_state_numpy': np.random.get_state(),
+            'rng_state_python': random.getstate()
         }
         torch.save(save_obj, str(save_path))
 
@@ -316,7 +329,8 @@ class XZTrainer:
         save_dir = Path(self.config.save_dir) / self.config.experiment_name
         if step == -1:
             if save_dir.is_dir():
-                save_files = [x for x in save_dir.glob('save-+([0-9]).pt')]
+                _re_save_name = re.compile('save-\d+\.pt')
+                save_files = [x for x in save_dir.iterdir() if _re_save_name.fullmatch(x.name)]
                 if len(save_files) == 0:
                     return None
                 else:
@@ -340,7 +354,6 @@ class XZTrainer:
     def train(self, train_data: Dataset, eval_data: Dataset, resume_from: int = -1):
         exp_name = self.config.experiment_name
         batches_in_epoch = self._calculate_batches_in_epoch(train_data)
-        steps_in_epoch = self._calculate_steps_in_epoch(train_data)
         total_train_steps = self._calculate_total_steps(train_data)
 
         print(f"Starting training experiment '{exp_name}' with total {total_train_steps} steps...")
@@ -367,60 +380,61 @@ class XZTrainer:
             if scaler is not None:
                 scaler.load_state_dict(state['scaler'])
             scheduler.load_state_dict(state['scheduler'])
-            print(f'Starting from step {state["saved_at_step"]}')
-            start_from_epoch = state['saved_at_step'] // steps_in_epoch
-            shift_batch_i = (state['saved_at_step'] % steps_in_epoch) * self.config.batch_size
+            torch.random.set_rng_state(state['rng_state_torch'].cpu())
+            np.random.set_state(state['rng_state_numpy'])
+            random.setstate(state['rng_state_python'])
+            start_from_epoch = state['epoch']
+            shift_batch_i = state['batch_i_saved_at'] + 1
+            train_sampler = ReusableSequentialSampler.from_state(state['sampler'])
         else:
-            start_from_epoch = 0
+            start_from_epoch = 1
             shift_batch_i = 0
+            train_sampler = ReusableSequentialSampler.new(train_data, self.config.dataloader_shuffle_train_dataset)
+
         del state
 
-        # Create DataLoaders
-        train_dl = self._create_dataloader(
-            train_data,
-            batch_size=self.config.batch_size,
-            sampler=ReusableSequentialSampler(train_data, shift_batch_i)
-        )
         if eval_data:
             eval_dl = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
         else:
             eval_dl = None
 
-
-
         # Run epoch loop
         with self.config.logger.create_engine(exp_name) as logger:
-            for epoch_i in range(start_from_epoch, self.config.epochs):
-                epoch = epoch_i + 1
-                s = f'* Epoch {epoch} / {self.config.epochs}'
-                print(s)
-                print('=' * len(s))
-
-                if scheduler_type == SchedulerType.STEP:
-                    _scheduler = scheduler
-                else:
-                    _scheduler = None
-
-                self._train_epoch(
-                    TrainContext(
-                        trainer=self,
-                        logger=logger,
-                        optimizer=optim,
-                        scaler=scaler,
-                        scheduler=_scheduler,
-                        data_loader=train_dl,
-                        model=model,
-                        model_unwrapped=self.model,
-                        epoch=epoch,
-                        total_steps=total_train_steps,
-                        evaluate_data_loader=eval_dl,
-                        dataset_batches=batches_in_epoch,
-                        shift_batch_i=shift_batch_i
+            with tqdm(total=total_train_steps, desc=f'Train') as progress_bar:
+                for epoch in range(start_from_epoch, self.config.epochs + 1):
+                    if scheduler_type == SchedulerType.STEP:
+                        _scheduler = scheduler
+                    else:
+                        _scheduler = None
+                    train_dl = self._create_dataloader(
+                        train_data,
+                        batch_size=self.config.batch_size,
+                        sampler=train_sampler
                     )
-                )
+                    self._train_epoch(
+                        TrainContext(
+                            trainer=self,
+                            logger=logger,
+                            optimizer=optim,
+                            scaler=scaler,
+                            scheduler=_scheduler,
+                            data_loader=train_dl,
+                            sampler=train_sampler,
+                            model=model,
+                            model_unwrapped=self.model,
+                            epoch=epoch,
+                            total_steps=total_train_steps,
+                            evaluate_data_loader=eval_dl,
+                            dataset_batches=batches_in_epoch,
+                            shift_batch_i=shift_batch_i,
+                            progress_bar=progress_bar
+                        )
+                    )
+                    shift_batch_i = 0
+                    train_sampler = ReusableSequentialSampler.new(train_data, self.config.dataloader_shuffle_train_dataset)
 
-                if scheduler_type == SchedulerType.EPOCH:
-                    scheduler.step()
+                    if scheduler_type == SchedulerType.EPOCH:
+                        scheduler.step()
         return exp_name
 
     def load_model_checkpoint(self, checkpoint_file: str, checkpoint_type: CheckpointType):
@@ -461,4 +475,3 @@ class XZTrainer:
             return model_outputs, metrics
         else:
             return model_outputs, {}
-

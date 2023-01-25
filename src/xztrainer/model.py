@@ -46,10 +46,11 @@ class XZTrainerConfig:
     dataloader_num_workers: int = multiprocessing.cpu_count()
     dataloader_pin_memory: bool = True
     dataloader_persistent_workers: bool = True
+    dataloader_shuffle_train_dataset: bool = True
     accumulation_batches: int = 1
     print_steps: int = 100
     eval_steps: int = 0
-    save_steps: int = 0
+    save_steps: int = 100
     save_keep_n: int = -1
     save_dir: str = 'checkpoint'
     collate_fn: Callable[[List[object]], Any] = default_collate
