@@ -27,6 +27,8 @@ ModelOutputType = Union[Tensor, List]
 ModelOutputsType = Dict[str, ModelOutputType]
 DataType = Union[Dict[str, Any], Iterable]
 
+_RE_SAVE_NAME = re.compile('save-\d+\.pt')
+
 
 def _convert_model_outputs(out: ModelOutputType) -> List:
     if isinstance(out, Tensor):
@@ -307,6 +309,15 @@ class XZTrainer:
             context.logger.update_time_step(context.epoch)
             self._log_trainable(context, model_outputs)
 
+    def _cleanup_saves(self):
+        if self.config.save_keep_n >= 0:
+            save_dir = Path(self.config.save_dir) / self.config.experiment_name
+            save_files = sorted(self._get_save_files(save_dir), reverse=True)
+            save_files_to_delete = save_files[self.config.save_keep_n:]
+            for step, file in save_files_to_delete:
+                print(f'Deleting previous save file: "{file}"')
+                file.unlink()
+
     def _save(self, context: TrainContext, step: int, batch_i: int):
         save_dir = Path(self.config.save_dir) / self.config.experiment_name
         save_dir.mkdir(exist_ok=True, parents=True)
@@ -324,17 +335,24 @@ class XZTrainer:
             'rng_state_python': random.getstate()
         }
         torch.save(save_obj, str(save_path))
+        print(f'Saving all the states to {save_path}')
+        self._cleanup_saves()
+
+    @staticmethod
+    def _get_save_files(save_dir: Path) -> List[Tuple[int, Path]]:
+        save_files = [x for x in save_dir.iterdir() if _RE_SAVE_NAME.fullmatch(x.name)]
+        save_files_with_step = [(int(x.stem.split('-')[1]), x) for x in save_files]
+        return save_files_with_step
 
     def _load(self, step: int) -> Optional[Dict[str, Any]]:
         save_dir = Path(self.config.save_dir) / self.config.experiment_name
         if step == -1:
             if save_dir.is_dir():
-                _re_save_name = re.compile('save-\d+\.pt')
-                save_files = [x for x in save_dir.iterdir() if _re_save_name.fullmatch(x.name)]
+                save_files = self._get_save_files(save_dir)
                 if len(save_files) == 0:
                     return None
                 else:
-                    save_file = max(save_files, key=lambda x: int(x.stem.split('-')[1]))
+                    save_file = max(save_files)[1]
             else:
                 return None
         else:
