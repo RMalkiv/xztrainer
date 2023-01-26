@@ -11,7 +11,7 @@ from torchvision.models import resnet18
 from torchvision.transforms import ToTensor
 
 from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, XZTrainable, BaseContext, DataType, \
-    ModelOutputType, ClassifierType
+    ModelOutputType, ClassifierType, TrainContext
 from xztrainer.logger.compose import ComposeLoggingEngineConfig
 from xztrainer.logger.stream import StreamLoggingEngineConfig
 from xztrainer.logger.tensorboard import TensorboardLoggingEngineConfig
@@ -32,6 +32,9 @@ if __name__ == '__main__':
             loss = self.loss(logits, label)
 
             return loss, {'predictions': preds, 'targets': label}
+
+        def on_load(self, context: TrainContext, step: int):
+            print(f'Next step will be: {step}')
 
         def calculate_metrics(
                 self,

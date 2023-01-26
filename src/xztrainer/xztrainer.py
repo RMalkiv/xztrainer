@@ -148,6 +148,9 @@ class XZTrainable(ABC):
     ) -> Dict[ClassifierType, float]:
         return {}
 
+    def on_load(self, context: TrainContext, step: int):
+        pass
+
     def log(self, context: BaseTrainContext):
         pass
 
@@ -400,12 +403,12 @@ class XZTrainer:
             np.random.set_state(state['rng_state_numpy'])
             random.setstate(state['rng_state_python'])
             start_from_epoch = state['epoch']
-            shift_batch_i = state['batch_i_saved_at'] + 1
-            train_sampler = ReusableSequentialSampler.from_state(state['sampler'])
+            batch_i_saved_at = state['batch_i_saved_at']
+            sampler_state = state['sampler']
         else:
             start_from_epoch = 1
-            shift_batch_i = 0
-            train_sampler = ReusableSequentialSampler.new(train_data, self.config.dataloader_shuffle_train_dataset)
+            batch_i_saved_at = -1
+            sampler_state = None
 
         del state
 
@@ -422,13 +425,21 @@ class XZTrainer:
                         _scheduler = scheduler
                     else:
                         _scheduler = None
+
+                    if epoch == start_from_epoch and sampler_state is not None:
+                        train_sampler = ReusableSequentialSampler.from_state(sampler_state)
+                        shift_batch_i = batch_i_saved_at + 1
+                    else:
+                        train_sampler = ReusableSequentialSampler.new(train_data,
+                                                                      self.config.dataloader_shuffle_train_dataset)
+                        shift_batch_i = 0
+
                     train_dl = self._create_dataloader(
                         train_data,
                         batch_size=self.config.batch_size,
                         sampler=train_sampler
                     )
-                    self._train_epoch(
-                        TrainContext(
+                    context = TrainContext(
                             trainer=self,
                             logger=logger,
                             optimizer=optim,
@@ -445,9 +456,9 @@ class XZTrainer:
                             shift_batch_i=shift_batch_i,
                             progress_bar=progress_bar
                         )
-                    )
-                    shift_batch_i = 0
-                    train_sampler = ReusableSequentialSampler.new(train_data, self.config.dataloader_shuffle_train_dataset)
+                    if epoch == start_from_epoch:
+                        self.trainable.on_load(context, context.get_step_from_batch(context.get_actual_batch_i(0)))
+                    self._train_epoch(context)
 
                     if scheduler_type == SchedulerType.EPOCH:
                         scheduler.step()
