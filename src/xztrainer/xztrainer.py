@@ -315,7 +315,6 @@ class XZTrainer:
             save_files = sorted(self._get_save_files(save_dir), reverse=True)
             save_files_to_delete = save_files[self.config.save_keep_n:]
             for step, file in save_files_to_delete:
-                print(f'Deleting previous save file: "{file}"')
                 file.unlink()
 
     def _save(self, context: TrainContext, step: int, batch_i: int):
@@ -335,7 +334,6 @@ class XZTrainer:
             'rng_state_python': random.getstate()
         }
         torch.save(save_obj, str(save_path))
-        print(f'Saving all the states to {save_path}')
         self._cleanup_saves()
 
     @staticmethod
