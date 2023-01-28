@@ -50,6 +50,7 @@ class XZTrainerConfig:
     accumulation_batches: int = 1
     print_steps: int = 100
     eval_steps: int = 0
+    skip_nan_loss: bool = True
     save_steps: int = 100
     save_keep_n: int = -1
     save_dir: str = 'checkpoint'

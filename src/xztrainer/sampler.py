@@ -1,7 +1,7 @@
 import random
-from typing import Sized, Iterator, List, Optional, Any, Dict
+from typing import Iterator, List, Any, Dict
 
-from torch.utils.data import Sampler
+from torch.utils.data import Sampler, Dataset
 
 
 class ReusableSequentialSampler(Sampler[int]):
@@ -29,7 +29,7 @@ class ReusableSequentialSampler(Sampler[int]):
         return cls(state['indices'], state['shift_steps'])
 
     @classmethod
-    def new(cls, data: Sized, shuffle: bool):
+    def new(cls, data: Dataset, shuffle: bool):
         indices = list(range(len(data)))
         if shuffle:
             random.shuffle(indices)

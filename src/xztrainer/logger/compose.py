@@ -1,5 +1,5 @@
 from types import TracebackType
-from typing import Optional, Type, List
+from typing import Optional, Type
 
 from . import LoggingEngine, LoggingEngineConfig, ClassifierType
 

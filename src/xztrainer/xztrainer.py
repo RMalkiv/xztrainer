@@ -1,3 +1,4 @@
+import abc
 import math
 import random
 import re
@@ -7,7 +8,7 @@ from collections.abc import Mapping, Set
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar, Generic, Optional, Dict, Any, Tuple, List, Union, Iterable
+from typing import Optional, Dict, Any, Tuple, List, Union, Iterable
 
 import numpy as np
 import torch
@@ -16,11 +17,11 @@ from torch.cuda.amp import GradScaler
 from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
 from .logger import LoggingEngine, ClassifierType
+from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
 from .sampler import ReusableSequentialSampler
 
 ModelOutputType = Union[Tensor, List]
@@ -141,12 +142,13 @@ class XZTrainable(ABC):
     ) -> Tuple[Tensor, ModelOutputsType]:
         ...
 
+    @abc.abstractmethod
     def calculate_metrics(
             self,
             context: BaseContext,
             model_outputs: Dict[str, List]
     ) -> Dict[ClassifierType, float]:
-        return {}
+        ...
 
     def on_load(self, context: TrainContext, step: int):
         pass
@@ -209,23 +211,27 @@ class XZTrainer:
         else:
             return data
 
-    def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Tuple[
-        Tensor, ModelOutputsType]:
+    def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Optional[Tuple[Tensor, ModelOutputsType]]:
         data = self._move_data_to_device(data)
-
         loss, model_output = self.trainable.step(context, data)
         if loss is not None:
+            if torch.isnan(loss):
+                print('NAN loss found!')
+                if self.config.skip_nan_loss:
+                    return None
             model_outputs['loss'].append(loss.item())
         for k, v in model_output.items():
             model_outputs[k].extend(_convert_model_outputs(v))
         return loss, model_output
 
-    def _set_training_state(self, context: BaseContext):
+    @staticmethod
+    def _set_training_state(context: BaseContext):
         context.model.train()
         if isinstance(context, BaseTrainContext):
             context.logger.update_top_classifier(('step', 'train'))
 
-    def _set_evaluating_state(self, context: BaseContext):
+    @staticmethod
+    def _set_evaluating_state(context: BaseContext):
         context.model.eval()
         if isinstance(context, BaseTrainContext):
             context.logger.update_top_classifier(('step', 'eval'))
@@ -465,7 +471,7 @@ class XZTrainer:
         return exp_name
 
     def load_model_checkpoint(self, checkpoint_file: str, checkpoint_type: CheckpointType):
-        if not os.path.isfile(checkpoint_file):
+        if not Path(checkpoint_file).is_file():
             print(f"'{checkpoint_file}' file doesn't exist")
             return
         print(f"Loading checkpoint '{checkpoint_file}'")
@@ -487,7 +493,8 @@ class XZTrainer:
         context = InferContext(
             trainer=self,
             data_loader=dataloader,
-            model=self.model
+            model=self.model,
+            dataset_batches=len(dataloader)
         )
         self._set_evaluating_state(context)
         with torch.no_grad():
