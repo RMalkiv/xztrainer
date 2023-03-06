@@ -159,6 +159,9 @@ class XZTrainable(ABC):
     def on_update(self, context: TrainContext, step: int):
         pass
 
+    def on_pre_update(self, context: TrainContext, step: int):
+        pass
+
 
 class XZTrainer:
     config: XZTrainerConfig
@@ -271,6 +274,7 @@ class XZTrainer:
             if do_update:
                 if context.scaler is not None:
                     context.scaler.unscale_(context.optimizer)
+                self.trainable.on_pre_update(context, step)
                 l2_grad_norm = torch.norm(
                     torch.stack(
                         [torch.norm(p.grad.detach(), 2.0)
