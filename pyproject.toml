@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "xztrainer"
-version = "0.7.1"
+version = "0.7.2"
 description = "A customizable training pipeline for PyTorch"
 authors = ["Maxim Afanasyev <mr.applexz@gmail.com>"]
 license = "MPL-2.0"
