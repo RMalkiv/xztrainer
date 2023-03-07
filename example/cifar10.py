@@ -33,6 +33,9 @@ if __name__ == '__main__':
 
             return loss, {'predictions': preds, 'targets': label}
 
+        def can_stack_model_outputs(self, name: str, outputs: ModelOutputType) -> bool:
+            return name in {'predictions', 'targets'}
+
         def on_load(self, context: TrainContext, step: int):
             print(f'Next step will be: {step}')
 

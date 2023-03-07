@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from .logger import LoggingEngine, ClassifierType
-from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType, ModelOutputStackingPolicy
+from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
 from .sampler import ReusableSequentialSampler
 
 ModelOutputType = Union[Tensor, List]
@@ -142,6 +142,9 @@ class XZTrainable(ABC):
     ) -> Tuple[Tensor, ModelOutputsType]:
         ...
 
+    def can_stack_model_outputs(self, name: str, outputs: ModelOutputType) -> bool:
+        return False
+
     @abc.abstractmethod
     def calculate_metrics(
             self,
@@ -216,19 +219,7 @@ class XZTrainer:
             return data
 
     def _stack_model_outputs(self, outs: ModelOutputsType) -> ModelOutputsType:
-        policy_raw = self.config.stack_model_outputs
-        if isinstance(policy_raw, Tuple):
-            policy, policy_items = policy_raw
-            policy_items = set(policy_items)
-        else:
-            policy = policy_raw
-            policy_items = set()
-        if policy == ModelOutputStackingPolicy.STACK_ALL:
-            return {k: torch.stack(v) for k, v in outs.items()}
-        elif policy == ModelOutputStackingPolicy.STACK_ONLY:
-            return {k: torch.stack(v) if k in policy_items else v for k, v in outs.items()}
-        elif policy == ModelOutputStackingPolicy.STACK_EXCEPT:
-            return {k: torch.stack(v) if k not in policy_items else v for k, v in outs.items()}
+        return {k: torch.stack(v) if (k == 'loss' or self.trainable.can_stack_model_outputs(k, v)) else v for k, v in outs.items()}
 
     def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Optional[Tuple[Tensor, ModelOutputsType]]:
         data = self._move_data_to_device(data)

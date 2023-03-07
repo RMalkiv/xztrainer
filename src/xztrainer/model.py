@@ -21,12 +21,6 @@ class CheckpointType(Enum):
     XZTRAINER = 'xztrainer'
 
 
-class ModelOutputStackingPolicy(Enum):
-    STACK_ALL = 'stack_all'
-    STACK_EXCEPT = 'stack_except'
-    STACK_ONLY = 'stack_only'
-
-
 class LRSchedulerProtocol(Protocol):
     def step(self):
         ...
@@ -60,6 +54,5 @@ class XZTrainerConfig:
     save_steps: int = 100
     save_keep_n: int = -1
     save_dir: str = 'checkpoint'
-    stack_model_outputs: Union[ModelOutputStackingPolicy, Tuple[ModelOutputStackingPolicy, List[str]]] = ModelOutputStackingPolicy.STACK_ALL
     collate_fn: Callable[[List[object]], Any] = default_collate
     logger: LoggingEngineConfig = StreamLoggingEngineConfig()
