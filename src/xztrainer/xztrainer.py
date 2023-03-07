@@ -33,7 +33,10 @@ _RE_SAVE_NAME = re.compile('save-\d+\.pt')
 
 def _convert_model_outputs(out: ModelOutputType) -> List:
     if isinstance(out, Tensor):
-        return [x for x in out.detach().cpu()]
+        if out.ndim == 0:
+            return [out.detach().cpu()]
+        else:
+            return [x for x in out.detach().cpu()]
     elif isinstance(out, List):
         return out
     else:
