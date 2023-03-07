@@ -1,7 +1,7 @@
 import multiprocessing
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, Callable, List, Optional, Any
+from typing import Protocol, Callable, List, Optional, Any, Union, Tuple
 
 from torch import nn, dtype
 from torch.optim import Optimizer
@@ -19,6 +19,12 @@ class SchedulerType(Enum):
 class CheckpointType(Enum):
     MODEL_ONLY = 'model_only'
     XZTRAINER = 'xztrainer'
+
+
+class ModelOutputStackingPolicy(Enum):
+    STACK_ALL = 'stack_all'
+    STACK_EXCEPT = 'stack_except'
+    STACK_ONLY = 'stack_only'
 
 
 class LRSchedulerProtocol(Protocol):
@@ -54,5 +60,6 @@ class XZTrainerConfig:
     save_steps: int = 100
     save_keep_n: int = -1
     save_dir: str = 'checkpoint'
+    stack_model_outputs: Union[ModelOutputStackingPolicy, Tuple[ModelOutputStackingPolicy, List[str]]] = ModelOutputStackingPolicy.STACK_ALL
     collate_fn: Callable[[List[object]], Any] = default_collate
     logger: LoggingEngineConfig = StreamLoggingEngineConfig()

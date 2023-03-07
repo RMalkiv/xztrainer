@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from .logger import LoggingEngine, ClassifierType
-from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
+from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType, ModelOutputStackingPolicy
 from .sampler import ReusableSequentialSampler
 
 ModelOutputType = Union[Tensor, List]
@@ -33,10 +33,7 @@ _RE_SAVE_NAME = re.compile('save-\d+\.pt')
 
 def _convert_model_outputs(out: ModelOutputType) -> List:
     if isinstance(out, Tensor):
-        if out.ndim == 0:
-            return [out.item()]
-        else:
-            return [x for x in out.detach().cpu().numpy()]
+        return [x for x in out.detach().cpu()]
     elif isinstance(out, List):
         return out
     else:
@@ -192,8 +189,9 @@ class XZTrainer:
         new_output_lens = {k: len(v) for k, v in model_outputs.items()}
         if prev_output_lens is not None:
             model_outputs = {k: v[prev_output_lens[k]:] for k, v in model_outputs.items()}
+        model_outputs = self._stack_model_outputs(model_outputs)
         scalars = self.trainable.calculate_metrics(context, model_outputs)
-        scalars['loss'] = float(np.mean(model_outputs['loss']))
+        scalars['loss'] = torch.mean(model_outputs['loss']).item()
         for k, v in scalars.items():
             context.logger.log_scalar(k, v)
         self.trainable.log(context)
@@ -214,6 +212,21 @@ class XZTrainer:
         else:
             return data
 
+    def _stack_model_outputs(self, outs: ModelOutputsType) -> ModelOutputsType:
+        policy_raw = self.config.stack_model_outputs
+        if isinstance(policy_raw, Tuple):
+            policy, policy_items = policy_raw
+            policy_items = set(policy_items)
+        else:
+            policy = policy_raw
+            policy_items = set()
+        if policy == ModelOutputStackingPolicy.STACK_ALL:
+            return {k: torch.stack(v) for k, v in outs.items()}
+        elif policy == ModelOutputStackingPolicy.STACK_ONLY:
+            return {k: torch.stack(v) if k in policy_items else v for k, v in outs.items()}
+        elif policy == ModelOutputStackingPolicy.STACK_EXCEPT:
+            return {k: torch.stack(v) if k not in policy_items else v for k, v in outs.items()}
+
     def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Optional[Tuple[Tensor, ModelOutputsType]]:
         data = self._move_data_to_device(data)
         loss, model_output = self.trainable.step(context, data)
@@ -222,7 +235,7 @@ class XZTrainer:
                 print('NAN loss found!')
                 if self.config.skip_nan_loss:
                     return None
-            model_outputs['loss'].append(loss.item())
+            model_outputs['loss'].append(loss.detach().cpu())
         for k, v in model_output.items():
             model_outputs[k].extend(_convert_model_outputs(v))
         return loss, model_output
@@ -508,6 +521,7 @@ class XZTrainer:
                     self._forward_pass(context, model_outputs, data)
                     progress_bar.update()
         self._set_training_state(context)
+        model_outputs = self._stack_model_outputs(model_outputs)
         if calculate_metrics:
             metrics = self.trainable.calculate_metrics(context, model_outputs)
             return model_outputs, metrics
