@@ -18,6 +18,7 @@ from torch.nn import Module
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
+from torchmetrics import Metric, MeanMetric
 from tqdm import tqdm
 
 from .logger import LoggingEngine, ClassifierType
@@ -31,23 +32,23 @@ DataType = Union[Dict[str, Any], Iterable]
 _RE_SAVE_NAME = re.compile('save-\d+\.pt')
 
 
-def _convert_model_outputs_intra(output: ModelOutputType) -> ModelOutputType:
+def _convert_model_outputs_for_inference_intra(output: ModelOutputType) -> ModelOutputType:
     if isinstance(output, Tensor):
         return output.detach().cpu()
     elif isinstance(output, List):
-        return [_convert_model_outputs_intra(x) for x in output]
+        return [_convert_model_outputs_for_inference_intra(x) for x in output]
     else:
         return output
 
 
-def _convert_model_outputs(out: ModelOutputType) -> List:
+def _convert_model_outputs_for_inference(out: ModelOutputType) -> List:
     if isinstance(out, Tensor):
         if out.ndim == 0:
             return [out.detach().cpu()]
         else:
             return [x for x in out.detach().cpu()]
     elif isinstance(out, List):
-        return _convert_model_outputs_intra(out)
+        return _convert_model_outputs_for_inference_intra(out)
     else:
         raise ValueError(f'Invalid model output type: {type(out)}')
 
@@ -151,15 +152,12 @@ class XZTrainable(ABC):
     ) -> Tuple[Tensor, ModelOutputsType]:
         ...
 
-    def can_stack_model_outputs(self, name: str, outputs: ModelOutputType) -> bool:
-        return False
+    @abc.abstractmethod
+    def create_metrics(self) -> Dict[str, Metric]:
+        ...
 
     @abc.abstractmethod
-    def calculate_metrics(
-            self,
-            context: BaseContext,
-            model_outputs: Dict[str, List]
-    ) -> Dict[ClassifierType, float]:
+    def update_metrics(self, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
         ...
 
     def on_load(self, context: TrainContext, step: int):
@@ -199,19 +197,12 @@ class XZTrainer:
             **kwargs
         )
 
-    def _log_trainable(self, context: BaseTrainContext, model_outputs: ModelOutputsType,
-                       prev_output_lens: Optional[Dict[str, int]] = None) -> Dict[str, int]:
-        new_output_lens = {k: len(v) for k, v in model_outputs.items()}
-        if prev_output_lens is not None:
-            model_outputs = {k: v[prev_output_lens[k]:] for k, v in model_outputs.items()}
-        model_outputs = self._stack_model_outputs(model_outputs)
-        scalars = self.trainable.calculate_metrics(context, model_outputs)
-        scalars['loss'] = torch.mean(model_outputs['loss']).item()
-        for k, v in scalars.items():
-            context.logger.log_scalar(k, v)
+    def _log_trainable(self, context: BaseTrainContext, metrics: Dict[str, Metric]):
+        for k, v in metrics.items():
+            context.logger.log_scalar(k, v.compute())
+            v.reset()
         self.trainable.log(context)
         context.logger.flush()
-        return new_output_lens
 
     def _move_data_to_device(self, data: Any) -> DataType:
         if isinstance(data, Tensor):
@@ -227,10 +218,7 @@ class XZTrainer:
         else:
             return data
 
-    def _stack_model_outputs(self, outs: ModelOutputsType) -> ModelOutputsType:
-        return {k: torch.stack(v) if (k == 'loss' or self.trainable.can_stack_model_outputs(k, v)) else v for k, v in outs.items()}
-
-    def _forward_pass(self, context: BaseContext, model_outputs: Dict[str, ModelOutputType], data: DataType) -> Optional[Tuple[Tensor, ModelOutputsType]]:
+    def _forward_pass(self, context: BaseContext, data: DataType) -> Optional[Tuple[Tensor, ModelOutputsType]]:
         data = self._move_data_to_device(data)
         loss, model_output = self.trainable.step(context, data)
         if loss is not None:
@@ -238,9 +226,6 @@ class XZTrainer:
                 print('NAN loss found!')
                 if self.config.skip_nan_loss:
                     return None
-            model_outputs['loss'].append(loss.detach().cpu())
-        for k, v in model_output.items():
-            model_outputs[k].extend(_convert_model_outputs(v))
         return loss, model_output
 
     @staticmethod
@@ -255,13 +240,25 @@ class XZTrainer:
         if isinstance(context, BaseTrainContext):
             context.logger.update_top_classifier(('step', 'eval'))
 
+    def _create_metrics(self) -> Dict[str, Metric]:
+        metrics = self.trainable.create_metrics()
+        metrics['loss'] = MeanMetric()
+        metrics = {k: v.to(self.device) for k, v in metrics.items()}
+        return metrics
+
+    def _update_metrics(self, loss: Tensor, model_outputs: ModelOutputsType, metrics: Dict[str, Metric]):
+        metrics['loss'].update(loss)
+        self.trainable.update_metrics(model_outputs, metrics)
+
     def _train_epoch(self, context: TrainContext):
         self._set_training_state(context)
         context.progress_bar.update(
-            context.get_step_from_batch(context.get_actual_batch_i(0)) - 1 - context.progress_bar.n)
+            context.get_step_from_batch(context.get_actual_batch_i(0)) - 1 - context.progress_bar.n
+        )
 
-        model_outputs = defaultdict(lambda: list())
-        prev_output_lens = defaultdict(lambda: 0)
+        print_metrics = self._create_metrics()
+        train_metrics = self._create_metrics()
+        eval_metrics = self._create_metrics()
 
         for batch_i, data in enumerate(context.data_loader):
             batch_i = context.get_actual_batch_i(batch_i)
@@ -274,7 +271,9 @@ class XZTrainer:
             model_op_ctx = nullcontext() if self.config.amp_dtype is None else autocast(device_type='cuda',
                                                                                         dtype=self.config.amp_dtype)
             with model_op_ctx:
-                loss, _ = self._forward_pass(context, model_outputs, data)
+                loss, model_out = self._forward_pass(context, data)
+                self._update_metrics(loss, model_out, print_metrics)
+                self._update_metrics(loss, model_out, train_metrics)
 
             if do_update:
                 for group_i, group in enumerate(context.optimizer.param_groups):
@@ -317,17 +316,17 @@ class XZTrainer:
                 self.trainable.on_update(context, step)
 
                 if context.should_perform_step_action(self.config.print_steps, batch_i):
-                    prev_output_lens = self._log_trainable(context, model_outputs, prev_output_lens)
+                    self._log_trainable(context, print_metrics)
 
                 if context.evaluate_data_loader and context.should_perform_step_action(self.config.eval_steps,
                                                                                        batch_i):
                     self._set_evaluating_state(context)
                     context_eval = EvalContext.from_train_context(context)
                     with torch.no_grad():
-                        eval_model_outputs = defaultdict(lambda: list())
                         for eval_data in context_eval.data_loader:
-                            self._forward_pass(context_eval, eval_model_outputs, eval_data)
-                    self._log_trainable(context, eval_model_outputs)
+                            loss_eval, model_out_eval = self._forward_pass(context_eval, eval_data)
+                            self._update_metrics(loss_eval, model_out_eval, eval_metrics)
+                    self._log_trainable(context, eval_metrics)
                     self._set_training_state(context)
                 if context.should_perform_step_action(self.config.save_steps, batch_i):
                     self._save(context, step, batch_i)
@@ -336,7 +335,7 @@ class XZTrainer:
         if len(context.data_loader) > 0:
             context.logger.update_top_classifier(('epoch', 'train'))
             context.logger.update_time_step(context.epoch)
-            self._log_trainable(context, model_outputs)
+            self._log_trainable(context, train_metrics)
 
     def _cleanup_saves(self):
         if self.config.save_keep_n >= 0:
@@ -517,16 +516,19 @@ class XZTrainer:
             dataset_batches=len(dataloader)
         )
         self._set_evaluating_state(context)
+        infer_metrics = self._create_metrics() if calculate_metrics else None
         with torch.no_grad():
             model_outputs = defaultdict(lambda: list())
             with tqdm(total=len(dataloader), desc=f'Inference') as progress_bar:
                 for data in dataloader:
-                    self._forward_pass(context, model_outputs, data)
+                    loss_infer, model_out_infer = self._forward_pass(context, data)
+                    for k, v in model_out_infer.items():
+                        model_outputs[k].extend(_convert_model_outputs_for_inference(v))
+                    if calculate_metrics:
+                        self._update_metrics(loss_infer, model_out_infer, infer_metrics)
                     progress_bar.update()
         self._set_training_state(context)
-        model_outputs = self._stack_model_outputs(model_outputs)
         if calculate_metrics:
-            metrics = self.trainable.calculate_metrics(context, model_outputs)
-            return model_outputs, metrics
+            return dict(model_outputs), {k: v.compute() for k, v in infer_metrics.items()}
         else:
-            return model_outputs, {}
+            return dict(model_outputs), {}

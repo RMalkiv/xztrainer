@@ -6,14 +6,13 @@ from torch import Tensor
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
+from torchmetrics import Metric, Accuracy
 from torchvision.datasets import CIFAR10
 from torchvision.models import resnet18
 from torchvision.transforms import ToTensor
 
 from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, XZTrainable, BaseContext, DataType, \
     ModelOutputType, ClassifierType, TrainContext
-from xztrainer.logger.compose import ComposeLoggingEngineConfig
-from xztrainer.logger.stream import StreamLoggingEngineConfig
 from xztrainer.logger.tensorboard import TensorboardLoggingEngineConfig
 
 if __name__ == '__main__':
@@ -33,18 +32,16 @@ if __name__ == '__main__':
 
             return loss, {'predictions': preds, 'targets': label}
 
-        def can_stack_model_outputs(self, name: str, outputs: ModelOutputType) -> bool:
-            return name in {'predictions', 'targets'}
-
         def on_load(self, context: TrainContext, step: int):
             print(f'Next step will be: {step}')
 
-        def calculate_metrics(
-                self,
-                context: BaseContext,
-                model_outputs: Dict[str, List]
-        ) -> Dict[ClassifierType, float]:
-            return {'accuracy': accuracy_score(model_outputs['targets'], model_outputs['predictions'])}
+        def create_metrics(self) -> Dict[str, Metric]:
+            return {
+                'accuracy': Accuracy('multiclass', num_classes=10)
+            }
+
+        def update_metrics(self, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
+            metrics['accuracy'].update(model_outputs['predictions'], model_outputs['targets'])
 
 
     trainer = XZTrainer(
