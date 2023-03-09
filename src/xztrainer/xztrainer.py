@@ -31,6 +31,15 @@ DataType = Union[Dict[str, Any], Iterable]
 _RE_SAVE_NAME = re.compile('save-\d+\.pt')
 
 
+def _convert_model_outputs_intra(output: ModelOutputType) -> ModelOutputType:
+    if isinstance(output, Tensor):
+        return output.detach().cpu()
+    elif isinstance(output, List):
+        return [_convert_model_outputs_intra(x) for x in output]
+    else:
+        return output
+
+
 def _convert_model_outputs(out: ModelOutputType) -> List:
     if isinstance(out, Tensor):
         if out.ndim == 0:
@@ -38,7 +47,7 @@ def _convert_model_outputs(out: ModelOutputType) -> List:
         else:
             return [x for x in out.detach().cpu()]
     elif isinstance(out, List):
-        return out
+        return _convert_model_outputs_intra(out)
     else:
         raise ValueError(f'Invalid model output type: {type(out)}')
 
