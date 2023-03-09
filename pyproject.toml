@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "xztrainer"
-version = "0.8.0"
+version = "0.8.1"
 description = "A customizable training pipeline for PyTorch"
 authors = ["Maxim Afanasyev <mr.applexz@gmail.com>"]
 license = "MPL-2.0"
@@ -27,6 +27,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.extras]
 tensorboard = ["tensorboard"]
+torch = ["torch"]
 
 [tool.poe.tasks]
 install-torch = "python3 -m light_the_torch install --upgrade torch torchaudio torchvision torchmetrics"
