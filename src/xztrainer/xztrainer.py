@@ -83,6 +83,9 @@ class TrainContext(BaseTrainContext):
     sampler: ReusableSequentialSampler
     progress_bar: tqdm
     evaluate_data_loader: Optional[DataLoader]
+    metrics_print: Dict[str, Metric]
+    metrics_train: Dict[str, Metric]
+    metrics_evaluate: Dict[str, Metric]
 
     @property
     def total_steps_in_epoch(self) -> int:
@@ -173,6 +176,15 @@ class XZTrainable(ABC):
         pass
 
 
+def _metrics_to_state_dict(metrics: Dict[str, Metric]) -> Dict[str, Dict[str, Any]]:
+    return {k: v.state_dict() for k, v in metrics.items()}
+
+
+def _load_metrics_from_state_dict(metrics: Dict[str, Metric], state_dict: Dict[str, Dict[str, Any]]):
+    for k, v in metrics.items():
+        v.load_state_dict(state_dict[k])
+
+
 class XZTrainer:
     config: XZTrainerConfig
 
@@ -243,7 +255,10 @@ class XZTrainer:
     def _create_metrics(self) -> Dict[str, Metric]:
         metrics = self.trainable.create_metrics()
         metrics['loss'] = MeanMetric()
-        metrics = {k: v.to(self.device) for k, v in metrics.items()}
+        for k in metrics.keys():
+            m = metrics[k]
+            m.persistent(True)
+            metrics[k] = m.to(self.device)
         return metrics
 
     def _update_metrics(self, loss: Tensor, model_outputs: ModelOutputsType, metrics: Dict[str, Metric]):
@@ -255,10 +270,6 @@ class XZTrainer:
         context.progress_bar.update(
             context.get_step_from_batch(context.get_actual_batch_i(0)) - 1 - context.progress_bar.n
         )
-
-        print_metrics = self._create_metrics()
-        train_metrics = self._create_metrics()
-        eval_metrics = self._create_metrics()
 
         for batch_i, data in enumerate(context.data_loader):
             batch_i = context.get_actual_batch_i(batch_i)
@@ -272,8 +283,8 @@ class XZTrainer:
                                                                                         dtype=self.config.amp_dtype)
             with model_op_ctx:
                 loss, model_out = self._forward_pass(context, data)
-                self._update_metrics(loss, model_out, print_metrics)
-                self._update_metrics(loss, model_out, train_metrics)
+                self._update_metrics(loss, model_out, context.metrics_print)
+                self._update_metrics(loss, model_out, context.metrics_train)
 
             if do_update:
                 for group_i, group in enumerate(context.optimizer.param_groups):
@@ -316,7 +327,7 @@ class XZTrainer:
                 self.trainable.on_update(context, step)
 
                 if context.should_perform_step_action(self.config.print_steps, batch_i):
-                    self._log_trainable(context, print_metrics)
+                    self._log_trainable(context, context.metrics_print)
 
                 if context.evaluate_data_loader and context.should_perform_step_action(self.config.eval_steps,
                                                                                        batch_i):
@@ -325,8 +336,8 @@ class XZTrainer:
                     with torch.no_grad():
                         for eval_data in context_eval.data_loader:
                             loss_eval, model_out_eval = self._forward_pass(context_eval, eval_data)
-                            self._update_metrics(loss_eval, model_out_eval, eval_metrics)
-                    self._log_trainable(context, eval_metrics)
+                            self._update_metrics(loss_eval, model_out_eval, context.metrics_evaluate)
+                    self._log_trainable(context, context.metrics_evaluate)
                     self._set_training_state(context)
                 if context.should_perform_step_action(self.config.save_steps, batch_i):
                     self._save(context, step, batch_i)
@@ -335,7 +346,7 @@ class XZTrainer:
         if len(context.data_loader) > 0:
             context.logger.update_top_classifier(('epoch', 'train'))
             context.logger.update_time_step(context.epoch)
-            self._log_trainable(context, train_metrics)
+            self._log_trainable(context, context.metrics_train)
 
     def _cleanup_saves(self):
         if self.config.save_keep_n >= 0:
@@ -359,7 +370,10 @@ class XZTrainer:
             'sampler': context.sampler.save_state(batch_i, self.config.batch_size),
             'rng_state_torch': torch.get_rng_state(),
             'rng_state_numpy': np.random.get_state(),
-            'rng_state_python': random.getstate()
+            'rng_state_python': random.getstate(),
+            'metrics_print': _metrics_to_state_dict(context.metrics_print),
+            'metrics_train': _metrics_to_state_dict(context.metrics_train),
+            'metrics_eval': _metrics_to_state_dict(context.metrics_evaluate)
         }
         torch.save(save_obj, str(save_path))
         self._cleanup_saves()
@@ -416,6 +430,10 @@ class XZTrainer:
             scheduler_type = None
         model = self.model
 
+        metrics_print = self._create_metrics()
+        metrics_train = self._create_metrics()
+        metrics_eval = self._create_metrics()
+
         # Load the state
         state = self._load(resume_from)
         if state is not None:
@@ -430,6 +448,9 @@ class XZTrainer:
             start_from_epoch = state['epoch']
             batch_i_saved_at = state['batch_i_saved_at']
             sampler_state = state['sampler']
+            _load_metrics_from_state_dict(metrics_print, state['metrics_print'])
+            _load_metrics_from_state_dict(metrics_train, state['metrics_train'])
+            _load_metrics_from_state_dict(metrics_eval, state['metrics_eval'])
         else:
             start_from_epoch = 1
             batch_i_saved_at = -1
@@ -479,7 +500,10 @@ class XZTrainer:
                             evaluate_data_loader=eval_dl,
                             dataset_batches=batches_in_epoch,
                             shift_batch_i=shift_batch_i,
-                            progress_bar=progress_bar
+                            progress_bar=progress_bar,
+                            metrics_print=metrics_print,
+                            metrics_train=metrics_train,
+                            metrics_evaluate=metrics_eval
                         )
                     if epoch == start_from_epoch:
                         self.trainable.on_load(context, context.get_step_from_batch(context.get_actual_batch_i(0)))

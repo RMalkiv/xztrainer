@@ -14,8 +14,12 @@ from torchvision.transforms import ToTensor
 from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, XZTrainable, BaseContext, DataType, \
     ModelOutputType, ClassifierType, TrainContext
 from xztrainer.logger.tensorboard import TensorboardLoggingEngineConfig
+from xztrainer.setup_helper import set_seeds, enable_tf32
 
 if __name__ == '__main__':
+    set_seeds(0xCAFEBABE)
+    enable_tf32()
+
     dataset_train = CIFAR10(root='./cifar10', download=True, train=True, transform=ToTensor())
     dataset_test = CIFAR10(root='./cifar10', download=True, train=False, transform=ToTensor())
 
