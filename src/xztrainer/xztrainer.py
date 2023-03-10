@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List, Union, Iterable
 
-import numpy as np
 import torch
 from torch import Tensor, autocast
 from torch.cuda.amp import GradScaler
@@ -23,6 +22,7 @@ from tqdm import tqdm
 
 from .logger import LoggingEngine, ClassifierType
 from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
+from .rng import _set_rng_states, _get_rng_states
 from .sampler import ReusableSequentialSampler
 
 ModelOutputType = Union[Tensor, List]
@@ -368,9 +368,7 @@ class XZTrainer:
             'epoch': context.epoch,
             'batch_i_saved_at': batch_i,
             'sampler': context.sampler.save_state(batch_i, self.config.batch_size),
-            'rng_state_torch': torch.get_rng_state(),
-            'rng_state_numpy': np.random.get_state(),
-            'rng_state_python': random.getstate(),
+            'rng': _get_rng_states(),
             'metrics_print': _metrics_to_state_dict(context.metrics_print),
             'metrics_train': _metrics_to_state_dict(context.metrics_train),
             'metrics_eval': _metrics_to_state_dict(context.metrics_evaluate)
@@ -442,9 +440,7 @@ class XZTrainer:
             if scaler is not None:
                 scaler.load_state_dict(state['scaler'])
             scheduler.load_state_dict(state['scheduler'])
-            torch.random.set_rng_state(state['rng_state_torch'].cpu())
-            np.random.set_state(state['rng_state_numpy'])
-            random.setstate(state['rng_state_python'])
+            _set_rng_states(state['rng'])
             start_from_epoch = state['epoch']
             batch_i_saved_at = state['batch_i_saved_at']
             sampler_state = state['sampler']

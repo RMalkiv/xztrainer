@@ -1,14 +1,17 @@
 import os
 import random
 
-import numpy as np
 import torch
 
 
 def set_seeds(seed: int):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
+    try:
+        import numpy as np
+        np.random.seed(seed)
+    except ImportError:
+        pass
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
