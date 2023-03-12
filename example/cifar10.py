@@ -47,6 +47,11 @@ if __name__ == '__main__':
         def update_metrics(self, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
             metrics['accuracy'].update(model_outputs['predictions'], model_outputs['targets'])
 
+        def calculate_composition_metrics(self, metric_values: Dict[str, float]) -> Dict[str, float]:
+            return {
+                'accuracy_x2': metric_values['accuracy'] * 2
+            }
+
 
     trainer = XZTrainer(
         config=XZTrainerConfig(

@@ -163,6 +163,9 @@ class XZTrainable(ABC):
     def update_metrics(self, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
         ...
 
+    def calculate_composition_metrics(self, metric_values: Dict[str, float]) -> Dict[str, float]:
+        return {}
+
     def on_load(self, context: TrainContext, step: int):
         pass
 
@@ -209,10 +212,17 @@ class XZTrainer:
             **kwargs
         )
 
+    def _calculate_reset_metrics(self, metrics: Dict[str, Metric]) -> Dict[str, float]:
+        metric_values = {}
+        for name, metric in metrics.items():
+            metric_values[name] = metric.compute()
+            metric.reset()
+        metric_values.update(self.trainable.calculate_composition_metrics(metric_values))
+        return metric_values
+
     def _log_trainable(self, context: BaseTrainContext, metrics: Dict[str, Metric]):
-        for k, v in metrics.items():
-            context.logger.log_scalar(k, v.compute())
-            v.reset()
+        for k, v in self._calculate_reset_metrics(metrics).items():
+            context.logger.log_scalar(k, v)
         self.trainable.log(context)
         context.logger.flush()
 
@@ -549,6 +559,6 @@ class XZTrainer:
                     progress_bar.update()
         self._set_training_state(context)
         if calculate_metrics:
-            return dict(model_outputs), {k: v.compute() for k, v in infer_metrics.items()}
+            return dict(model_outputs), self._calculate_reset_metrics(infer_metrics)
         else:
             return dict(model_outputs), {}
