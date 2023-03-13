@@ -32,11 +32,14 @@ DataType = Union[Dict[str, Any], Iterable]
 _RE_SAVE_NAME = re.compile('save-\d+\.pt')
 
 
-def _convert_model_outputs_for_inference_intra(output: ModelOutputType) -> ModelOutputType:
+def _detach_tensor(output: ModelOutputType, move_to_cpu: bool) -> ModelOutputType:
     if isinstance(output, Tensor):
-        return output.detach().cpu()
+        output = output.detach()
+        if move_to_cpu:
+            output = output.cpu()
+        return output
     elif isinstance(output, List):
-        return [_convert_model_outputs_for_inference_intra(x) for x in output]
+        return [_detach_tensor(x, move_to_cpu) for x in output]
     else:
         return output
 
@@ -44,11 +47,11 @@ def _convert_model_outputs_for_inference_intra(output: ModelOutputType) -> Model
 def _convert_model_outputs_for_inference(out: ModelOutputType) -> List:
     if isinstance(out, Tensor):
         if out.ndim == 0:
-            return [out.detach().cpu()]
+            return [_detach_tensor(out, move_to_cpu=True)]
         else:
-            return [x for x in out.detach().cpu()]
+            return [_detach_tensor(x, move_to_cpu=True) for x in out]
     elif isinstance(out, List):
-        return _convert_model_outputs_for_inference_intra(out)
+        return _detach_tensor(out, move_to_cpu=True)
     else:
         raise ValueError(f'Invalid model output type: {type(out)}')
 
@@ -272,7 +275,8 @@ class XZTrainer:
         return metrics
 
     def _update_metrics(self, loss: Tensor, model_outputs: ModelOutputsType, metrics: Dict[str, Metric]):
-        metrics['loss'].update(loss)
+        model_outputs = {k: _detach_tensor(v, move_to_cpu=False) for k, v in model_outputs.items()}
+        metrics['loss'].update(loss.detach())
         self.trainable.update_metrics(model_outputs, metrics)
 
     def _train_epoch(self, context: TrainContext):
