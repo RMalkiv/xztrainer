@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchmetrics import Metric, MeanMetric
 from tqdm import tqdm
 
+from .functional import count_parameters
 from .logger import LoggingEngine, ClassifierType
 from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
 from .rng import _set_rng_states, _get_rng_states
@@ -426,7 +427,6 @@ class XZTrainer:
         batches_in_epoch = self._calculate_batches_in_epoch(train_data)
         total_train_steps = self._calculate_total_steps(train_data)
 
-        print(f"Starting training experiment '{exp_name}' with total {total_train_steps} steps...")
 
         # Initialize and wrap model, optimizer and scheduler
         optim = self.config.optimizer(self.model)
@@ -472,6 +472,12 @@ class XZTrainer:
             eval_dl = self._create_dataloader(eval_data, batch_size=self.config.batch_size_eval)
         else:
             eval_dl = None
+
+        print(f"Starting training experiment '{exp_name}'...")
+        print(f'Total steps: {total_train_steps:,}')
+        print(f'Parameters [total]: {count_parameters(model):,}')
+        print(f'Parameters [train]: {count_parameters(model, lambda p: p.requires_grad):,}')
+        print(f'Parameters [fixed]: {count_parameters(model, lambda p: not p.requires_grad):,}')
 
         # Run epoch loop
         with self.config.logger.create_engine(exp_name) as logger:
