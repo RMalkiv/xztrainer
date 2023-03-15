@@ -529,7 +529,12 @@ class XZTrainer:
                         scheduler.step()
         return exp_name
 
-    def load_model_checkpoint(self, checkpoint_file: str, checkpoint_type: CheckpointType):
+    def load_last_checkpoint(self):
+        save_dir = Path(self.config.save_dir) / self.config.experiment_name
+        save_files = sorted(self._get_save_files(save_dir), reverse=True)
+        self.load_model_checkpoint(checkpoint_file=save_files[0][1], checkpoint_type=CheckpointType.XZTRAINER)
+
+    def load_model_checkpoint(self, checkpoint_file: Union[str, Path], checkpoint_type: CheckpointType):
         if not Path(checkpoint_file).is_file():
             print(f"'{checkpoint_file}' file doesn't exist")
             return
