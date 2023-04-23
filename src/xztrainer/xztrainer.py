@@ -379,7 +379,7 @@ class XZTrainer:
             'model': context.model.state_dict(),
             'optimizer': context.optimizer.state_dict(),
             'scaler': context.scaler.state_dict() if context.scaler is not None else None,
-            'scheduler': context.scheduler.state_dict(),
+            'scheduler': context.scheduler.state_dict() if context.scheduler is not None else None,
             'epoch': context.epoch,
             'batch_i_saved_at': batch_i,
             'sampler': context.sampler.save_state(batch_i, self.config.batch_size),
@@ -453,7 +453,8 @@ class XZTrainer:
             optim.load_state_dict(state['optimizer'])
             if scaler is not None:
                 scaler.load_state_dict(state['scaler'])
-            scheduler.load_state_dict(state['scheduler'])
+            if scheduler is not None:
+                scheduler.load_state_dict(state['scheduler'])
             _set_rng_states(state['rng'])
             start_from_epoch = state['epoch']
             batch_i_saved_at = state['batch_i_saved_at']
