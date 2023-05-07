@@ -1,5 +1,5 @@
 import multiprocessing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, Callable, List, Optional, Any, Union, Tuple
 
@@ -55,4 +55,4 @@ class XZTrainerConfig:
     save_keep_n: int = -1
     save_dir: str = 'checkpoint'
     collate_fn: Callable[[List[object]], Any] = default_collate
-    logger: LoggingEngineConfig = StreamLoggingEngineConfig()
+    logger: LoggingEngineConfig = field(default_factory=lambda: StreamLoggingEngineConfig())
