@@ -56,3 +56,9 @@ class XZTrainerConfig:
     save_dir: str = 'checkpoint'
     collate_fn: Callable[[List[object]], Any] = default_collate
     logger: LoggingEngineConfig = field(default_factory=lambda: StreamLoggingEngineConfig())
+
+
+class ContextType(Enum):
+    TRAIN = 'train'
+    EVAL = 'eval'
+    INFERENCE = 'inference'

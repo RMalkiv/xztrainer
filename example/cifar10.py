@@ -12,7 +12,7 @@ from torchvision.models import resnet18
 from torchvision.transforms import ToTensor
 
 from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, XZTrainable, BaseContext, DataType, \
-    ModelOutputType, ClassifierType, TrainContext
+    ModelOutputType, ClassifierType, TrainContext, ContextType
 from xztrainer.logger.tensorboard import TensorboardLoggingEngineConfig
 from xztrainer.setup_helper import set_seeds, enable_tf32
 
@@ -39,15 +39,15 @@ if __name__ == '__main__':
         def on_load(self, context: TrainContext, step: int):
             print(f'Next step will be: {step}')
 
-        def create_metrics(self) -> Dict[str, Metric]:
+        def create_metrics(self, context_type: ContextType) -> Dict[str, Metric]:
             return {
                 'accuracy': Accuracy('multiclass', num_classes=10)
             }
 
-        def update_metrics(self, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
+        def update_metrics(self, context_type: ContextType, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
             metrics['accuracy'].update(model_outputs['predictions'], model_outputs['targets'])
 
-        def calculate_composition_metrics(self, metric_values: Dict[str, float]) -> Dict[str, float]:
+        def calculate_composition_metrics(self, context_type: ContextType, metric_values: Dict[str, float]) -> Dict[str, float]:
             return {
                 'accuracy_x2': metric_values['accuracy'] * 2
             }

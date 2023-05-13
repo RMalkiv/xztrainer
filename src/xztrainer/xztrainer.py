@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from .functional import count_parameters
 from .logger import LoggingEngine, ClassifierType
-from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType
+from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType, ContextType
 from .rng import _set_rng_states, _get_rng_states
 from .sampler import ReusableSequentialSampler
 
@@ -58,11 +58,16 @@ def _convert_model_outputs_for_inference(out: ModelOutputType) -> List:
 
 
 @dataclass
-class BaseContext:
+class BaseContext(abc.ABC):
     trainer: 'XZTrainer'
     dataset_batches: int
     data_loader: DataLoader
     model: Module
+
+    @property
+    @abc.abstractmethod
+    def context_type(self) -> ContextType:
+        ...
 
 
 @dataclass
@@ -127,6 +132,10 @@ class TrainContext(BaseTrainContext):
         else:
             return final_accumulations
 
+    @property
+    def context_type(self) -> ContextType:
+        return ContextType.TRAIN
+
 
 @dataclass
 class EvalContext(BaseTrainContext):
@@ -145,9 +154,15 @@ class EvalContext(BaseTrainContext):
             dataset_batches=context.dataset_batches
         )
 
+    @property
+    def context_type(self) -> ContextType:
+        return ContextType.EVAL
+
 
 class InferContext(BaseContext):
-    pass
+    @property
+    def context_type(self) -> ContextType:
+        return ContextType.INFERENCE
 
 
 class XZTrainable(ABC):
@@ -160,14 +175,14 @@ class XZTrainable(ABC):
         ...
 
     @abc.abstractmethod
-    def create_metrics(self) -> Dict[str, Metric]:
+    def create_metrics(self, context_type: ContextType) -> Dict[str, Metric]:
         ...
 
     @abc.abstractmethod
-    def update_metrics(self, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
+    def update_metrics(self, context_type: ContextType, model_outputs: Dict[str, List], metrics: Dict[str, Metric]):
         ...
 
-    def calculate_composition_metrics(self, metric_values: Dict[str, float]) -> Dict[str, float]:
+    def calculate_composition_metrics(self, context_type: ContextType, metric_values: Dict[str, float]) -> Dict[str, float]:
         return {}
 
     def on_load(self, context: TrainContext, step: int):
@@ -216,7 +231,7 @@ class XZTrainer:
             **kwargs
         )
 
-    def _calculate_reset_metrics(self, metrics: Dict[str, Metric]) -> Dict[str, float]:
+    def _calculate_reset_metrics(self, context_type: ContextType, metrics: Dict[str, Metric]) -> Dict[str, float]:
         metric_values = {}
         for name, metric in metrics.items():
             metric_val = metric.compute()
@@ -229,11 +244,11 @@ class XZTrainer:
                 for itm_i, itm in enumerate(metric_val.flatten()):
                     metric_values[f'{name}_{itm_i}'] = itm.item()
             metric.reset()
-        metric_values.update(self.trainable.calculate_composition_metrics(metric_values))
+        metric_values.update(self.trainable.calculate_composition_metrics(context_type, metric_values))
         return metric_values
 
     def _log_trainable(self, context: BaseTrainContext, metrics: Dict[str, Metric]):
-        for k, v in self._calculate_reset_metrics(metrics).items():
+        for k, v in self._calculate_reset_metrics(context.context_type, metrics).items():
             context.logger.log_scalar(k, v)
         self.trainable.log(context)
         context.logger.flush()
@@ -274,19 +289,16 @@ class XZTrainer:
         if isinstance(context, BaseTrainContext):
             context.logger.update_top_classifier(('step', 'eval'))
 
-    def _create_metrics(self) -> Dict[str, Metric]:
-        metrics = self.trainable.create_metrics()
-        metrics['loss'] = MeanMetric()
-        for k in metrics.keys():
-            m = metrics[k]
-            m.persistent(True)
-            metrics[k] = m.to(self.device)
+    def _create_metrics(self, context_type: ContextType) -> Dict[str, Metric]:
+        metrics = {}
+        for k, metric in self.trainable.create_metrics(context_type).items():
+            metric.persistent(True)
+            metrics[k] = metric.to(self.device)
         return metrics
 
-    def _update_metrics(self, loss: Tensor, model_outputs: ModelOutputsType, metrics: Dict[str, Metric]):
+    def _update_metrics(self, context_type: ContextType, model_outputs: ModelOutputsType, metrics: Dict[str, Metric]):
         model_outputs = {k: _detach_tensor(v, move_to_cpu=False) for k, v in model_outputs.items()}
-        metrics['loss'].update(loss.detach())
-        self.trainable.update_metrics(model_outputs, metrics)
+        self.trainable.update_metrics(context_type, model_outputs, metrics)
 
     def _train_epoch(self, context: TrainContext):
         self._set_training_state(context)
@@ -306,8 +318,8 @@ class XZTrainer:
                                                                                         dtype=self.config.amp_dtype)
             with model_op_ctx:
                 loss, model_out = self._forward_pass(context, data)
-                self._update_metrics(loss, model_out, context.metrics_print)
-                self._update_metrics(loss, model_out, context.metrics_train)
+                self._update_metrics(context.context_type, model_out, context.metrics_print)
+                self._update_metrics(context.context_type, model_out, context.metrics_train)
 
             if do_update:
                 for group_i, group in enumerate(context.optimizer.param_groups):
@@ -359,8 +371,8 @@ class XZTrainer:
                     with torch.no_grad():
                         for eval_data in context_eval.data_loader:
                             loss_eval, model_out_eval = self._forward_pass(context_eval, eval_data)
-                            self._update_metrics(loss_eval, model_out_eval, context.metrics_evaluate)
-                    self._log_trainable(context, context.metrics_evaluate)
+                            self._update_metrics(context_eval.context_type, model_out_eval, context.metrics_evaluate)
+                    self._log_trainable(context_eval, context.metrics_evaluate)
                     self._set_training_state(context)
                 if context.should_perform_step_action(self.config.save_steps, batch_i):
                     self._save(context, step, batch_i)
@@ -450,9 +462,9 @@ class XZTrainer:
             scheduler_type = None
         model = self.model
 
-        metrics_print = self._create_metrics()
-        metrics_train = self._create_metrics()
-        metrics_eval = self._create_metrics()
+        metrics_print = self._create_metrics(ContextType.TRAIN)
+        metrics_train = self._create_metrics(ContextType.TRAIN)
+        metrics_eval = self._create_metrics(ContextType.EVAL)
 
         # Load the state
         state = self._load(resume_from)
@@ -570,7 +582,7 @@ class XZTrainer:
             dataset_batches=len(dataloader)
         )
         self._set_evaluating_state(context)
-        infer_metrics = self._create_metrics() if calculate_metrics else None
+        infer_metrics = self._create_metrics(ContextType.INFERENCE) if calculate_metrics else None
         with torch.no_grad():
             model_outputs = defaultdict(lambda: list())
             with tqdm(total=len(dataloader), desc=f'Inference') as progress_bar:
@@ -579,10 +591,10 @@ class XZTrainer:
                     for k, v in model_out_infer.items():
                         model_outputs[k].extend(_convert_model_outputs_for_inference(v))
                     if calculate_metrics:
-                        self._update_metrics(loss_infer, model_out_infer, infer_metrics)
+                        self._update_metrics(ContextType.INFERENCE, model_out_infer, infer_metrics)
                     progress_bar.update()
         self._set_training_state(context)
         if calculate_metrics:
-            return dict(model_outputs), self._calculate_reset_metrics(infer_metrics)
+            return dict(model_outputs), self._calculate_reset_metrics(ContextType.INFERENCE, infer_metrics)
         else:
             return dict(model_outputs), {}
