@@ -219,7 +219,15 @@ class XZTrainer:
     def _calculate_reset_metrics(self, metrics: Dict[str, Metric]) -> Dict[str, float]:
         metric_values = {}
         for name, metric in metrics.items():
-            metric_values[name] = metric.compute()
+            metric_val = metric.compute()
+            metric_val_els = metric_val.numel()
+            if metric_val_els == 0:
+                raise ValueError(f'empty metric {name}')
+            elif metric_val_els == 1:
+                metric_values[name] = metric_val.item()
+            else:
+                for itm_i, itm in enumerate(metric_val.flatten()):
+                    metric_values[f'{name}_{itm_i}'] = itm.item()
             metric.reset()
         metric_values.update(self.trainable.calculate_composition_metrics(metric_values))
         return metric_values
