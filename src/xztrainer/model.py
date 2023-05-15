@@ -1,7 +1,7 @@
 import multiprocessing
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, Callable, List, Optional, Any, Union, Tuple
+from typing import Protocol, Callable, List, Optional, Any, Union, Tuple, runtime_checkable
 
 from torch import nn, dtype
 from torch.optim import Optimizer
@@ -62,3 +62,10 @@ class ContextType(Enum):
     TRAIN = 'train'
     EVAL = 'eval'
     INFERENCE = 'inference'
+
+
+@runtime_checkable
+class MetricMultiOutputNamedProtocol(Protocol):
+    @property
+    def multi_output_names(self) -> List[str]:
+        ...

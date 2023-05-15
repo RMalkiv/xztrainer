@@ -22,7 +22,8 @@ from tqdm import tqdm
 
 from .functional import count_parameters
 from .logger import LoggingEngine, ClassifierType
-from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType, ContextType
+from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, CheckpointType, ContextType, \
+    MetricMultiOutputNamedProtocol
 from .rng import _set_rng_states, _get_rng_states
 from .sampler import ReusableSequentialSampler
 
@@ -241,8 +242,12 @@ class XZTrainer:
             elif metric_val_els == 1:
                 metric_values[name] = metric_val.item()
             else:
-                for itm_i, itm in enumerate(metric_val.flatten()):
-                    metric_values[f'{name}_{itm_i}'] = itm.item()
+                if isinstance(metric, MetricMultiOutputNamedProtocol):
+                    metric_names = metric.multi_output_names
+                else:
+                    metric_names = [str(i) for i in range(metric_val_els)]
+                for itm_name, itm in zip(metric_names, metric_val.flatten()):
+                    metric_values[f'{name}_{itm_name}'] = itm.item()
             metric.reset()
         metric_values.update(self.trainable.calculate_composition_metrics(context_type, metric_values))
         return metric_values
