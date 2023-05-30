@@ -232,7 +232,7 @@ class XZTrainer:
             **kwargs
         )
 
-    def _calculate_reset_metrics(self, context_type: ContextType, metrics: Dict[str, Metric]) -> Dict[str, float]:
+    def calculate_reset_metrics(self, context_type: ContextType, metrics: Dict[str, Metric]) -> Dict[str, float]:
         metric_values = {}
         for name, metric in metrics.items():
             metric_val = metric.compute()
@@ -253,7 +253,7 @@ class XZTrainer:
         return metric_values
 
     def _log_trainable(self, context: BaseTrainContext, metrics: Dict[str, Metric]):
-        for k, v in self._calculate_reset_metrics(context.context_type, metrics).items():
+        for k, v in self.calculate_reset_metrics(context.context_type, metrics).items():
             context.logger.log_scalar(k, v)
         self.trainable.log(context)
         context.logger.flush()
@@ -600,6 +600,6 @@ class XZTrainer:
                     progress_bar.update()
         self._set_training_state(context)
         if calculate_metrics:
-            return dict(model_outputs), self._calculate_reset_metrics(ContextType.INFERENCE, infer_metrics)
+            return dict(model_outputs), self.calculate_reset_metrics(ContextType.INFERENCE, infer_metrics)
         else:
             return dict(model_outputs), {}
