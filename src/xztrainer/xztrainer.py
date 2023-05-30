@@ -199,6 +199,27 @@ class XZTrainable(ABC):
         pass
 
 
+def calculate_reset_metrics(trainable: XZTrainable, context_type: ContextType, metrics: Dict[str, Metric]) -> Dict[str, float]:
+    metric_values = {}
+    for name, metric in metrics.items():
+        metric_val = metric.compute()
+        metric_val_els = metric_val.numel()
+        if metric_val_els == 0:
+            raise ValueError(f'empty metric {name}')
+        elif metric_val_els == 1:
+            metric_values[name] = metric_val.item()
+        else:
+            if isinstance(metric, MetricMultiOutputNamedProtocol):
+                metric_names = metric.multi_output_names
+            else:
+                metric_names = [str(i) for i in range(metric_val_els)]
+            for itm_name, itm in zip(metric_names, metric_val.flatten()):
+                metric_values[f'{name}_{itm_name}'] = itm.item()
+        metric.reset()
+    metric_values.update(trainable.calculate_composition_metrics(context_type, metric_values))
+    return metric_values
+
+
 def _metrics_to_state_dict(metrics: Dict[str, Metric]) -> Dict[str, Dict[str, Any]]:
     return {k: v.state_dict() for k, v in metrics.items()}
 
@@ -232,28 +253,8 @@ class XZTrainer:
             **kwargs
         )
 
-    def calculate_reset_metrics(self, context_type: ContextType, metrics: Dict[str, Metric]) -> Dict[str, float]:
-        metric_values = {}
-        for name, metric in metrics.items():
-            metric_val = metric.compute()
-            metric_val_els = metric_val.numel()
-            if metric_val_els == 0:
-                raise ValueError(f'empty metric {name}')
-            elif metric_val_els == 1:
-                metric_values[name] = metric_val.item()
-            else:
-                if isinstance(metric, MetricMultiOutputNamedProtocol):
-                    metric_names = metric.multi_output_names
-                else:
-                    metric_names = [str(i) for i in range(metric_val_els)]
-                for itm_name, itm in zip(metric_names, metric_val.flatten()):
-                    metric_values[f'{name}_{itm_name}'] = itm.item()
-            metric.reset()
-        metric_values.update(self.trainable.calculate_composition_metrics(context_type, metric_values))
-        return metric_values
-
     def _log_trainable(self, context: BaseTrainContext, metrics: Dict[str, Metric]):
-        for k, v in self.calculate_reset_metrics(context.context_type, metrics).items():
+        for k, v in calculate_reset_metrics(self.trainable, context.context_type, metrics).items():
             context.logger.log_scalar(k, v)
         self.trainable.log(context)
         context.logger.flush()
@@ -600,6 +601,6 @@ class XZTrainer:
                     progress_bar.update()
         self._set_training_state(context)
         if calculate_metrics:
-            return dict(model_outputs), self.calculate_reset_metrics(ContextType.INFERENCE, infer_metrics)
+            return dict(model_outputs), calculate_reset_metrics(self.trainable, ContextType.INFERENCE, infer_metrics)
         else:
             return dict(model_outputs), {}
