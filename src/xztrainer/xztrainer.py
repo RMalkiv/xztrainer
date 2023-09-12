@@ -27,7 +27,7 @@ from .model import XZTrainerConfig, SchedulerType, LRSchedulerProtocol, Checkpoi
 from .rng import _set_rng_states, _get_rng_states
 from .sampler import ReusableSequentialSampler
 
-ModelOutputType = Union[Tensor, List]
+ModelOutputType = Union[Tensor, List, Tuple]
 ModelOutputsType = Dict[str, ModelOutputType]
 DataType = Union[Dict[str, Any], Iterable]
 
@@ -42,6 +42,8 @@ def _detach_tensor(output: ModelOutputType, move_to_cpu: bool) -> ModelOutputTyp
         return output
     elif isinstance(output, List):
         return [_detach_tensor(x, move_to_cpu) for x in output]
+    elif isinstance(output, Tuple):
+        return tuple(_detach_tensor(x, move_to_cpu) for x in output)
     else:
         return output
 
@@ -53,6 +55,8 @@ def _convert_model_outputs_for_inference(out: ModelOutputType) -> List:
         else:
             return [_detach_tensor(x, move_to_cpu=True) for x in out]
     elif isinstance(out, List):
+        return _detach_tensor(out, move_to_cpu=True)
+    elif isinstance(out, Tuple):
         return _detach_tensor(out, move_to_cpu=True)
     else:
         raise ValueError(f'Invalid model output type: {type(out)}')
