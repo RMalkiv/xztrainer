@@ -1,7 +1,7 @@
 from typing import Tuple, Dict, List
 
 import torch
-from sklearn.metrics import accuracy_score
+from accelerate import Accelerator
 from torch import Tensor
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
@@ -11,9 +11,8 @@ from torchvision.datasets import CIFAR10
 from torchvision.models import resnet18
 from torchvision.transforms import ToTensor
 
-from xztrainer import XZTrainer, XZTrainerConfig, SchedulerType, XZTrainable, BaseContext, DataType, \
-    ModelOutputType, ClassifierType, TrainContext, ContextType
-from xztrainer.logger.tensorboard import TensorboardLoggingEngineConfig
+from xztrainer import XZTrainer, XZTrainerConfig, XZTrainable, BaseContext, DataType, \
+    ModelOutputType, TrainContext, ContextType
 from xztrainer.setup_helper import set_seeds, enable_tf32
 
 if __name__ == '__main__':
@@ -55,25 +54,25 @@ if __name__ == '__main__':
 
     trainer = XZTrainer(
         config=XZTrainerConfig(
-            batch_size=512,
-            batch_size_eval=256,
+            experiment_name='exp-2',
+            minibatch_size=32,
+            minibatch_size_eval=256,
             epochs=10,
             optimizer=lambda module: AdamW(module.parameters(), lr=1e-3, weight_decay=1e-4),
-            amp_dtype=torch.float16,
-            experiment_name='cifar10',
             gradient_clipping=1.0,
             scheduler=lambda optimizer, total_steps: OneCycleLR(optimizer, 1e-3, total_steps),
-            scheduler_type=SchedulerType.STEP,
-            save_steps=10,
-            save_keep_n=3,
+            save_steps=100,
+            dataloader_persistent_workers=True,
             dataloader_num_workers=8,
-            accumulation_batches=4,
-            print_steps=10,
-            eval_steps=50,
-            logger=TensorboardLoggingEngineConfig()
-            # logger=ComposeLoggingEngineConfig(TensorboardLoggingEngineConfig(), StreamLoggingEngineConfig())
+            log_steps=10,
+            eval_steps=500
         ),
-        model=resnet18(pretrained=False, num_classes=10),
-        trainable=SimpleTrainable()
+        model=resnet18(weights=None, num_classes=10),
+        trainable=SimpleTrainable(),
+        accelerator=Accelerator(
+            gradient_accumulation_steps=32,
+            log_with='tensorboard',
+            project_dir='.'
+        )
     )
     trainer.train(dataset_train, dataset_test)
