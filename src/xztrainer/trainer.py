@@ -166,7 +166,9 @@ class XZTrainer:
         save_path = save_dir / f'save-{step}'
         self.accelerator.wait_for_everyone()
         self.accelerator.save_state(str(save_path))
-        self._cleanup_saves()
+        self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
+            self._cleanup_saves()
 
     def _load(self):
         save_dir = Path(self.accelerator.project_dir) / 'checkpoint' / self.config.experiment_name
