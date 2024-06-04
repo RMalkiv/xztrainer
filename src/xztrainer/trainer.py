@@ -21,7 +21,7 @@ from xztrainer.model import XZTrainerConfig, DataType, ModelOutputsType, MetricM
 from xztrainer.tensor_helper import detach_tensor, move_data_to_device
 from xztrainer.trainable import XZTrainable
 
-_RE_SAVE_NAME = re.compile('save-\d+')
+_RE_SAVE_NAME = re.compile(r'save-\d+')
 
 
 class XZTrainState:
@@ -72,6 +72,7 @@ class XZTrainState:
 
 class XZTrainer:
     config: XZTrainerConfig
+    """Configuration used by this trainer"""
 
     def __init__(
             self,
@@ -80,6 +81,15 @@ class XZTrainer:
             trainable: XZTrainable,
             accelerator: Accelerator
     ):
+        """
+        Creates a trainer instance
+
+        Args:
+            config: Trainer config to use
+            model: Model instance to train
+            trainable: Trainable instance to use
+            accelerator: Accelerator object
+        """
         self.config = config
 
         self.accelerator = accelerator
@@ -269,7 +279,21 @@ class XZTrainer:
             context.logger.update_time_step(context.train_state.current_epoch)
             self._log_trainable(context, context.train_state.train_metrics)
 
-    def train(self, train_data: Dataset, eval_data: Dataset):
+    def train(self, train_data: Dataset, eval_data: Dataset | None):
+        """
+        This function:
+
+        1. Prepares all the objects used for further training, such as optimizer, dataloaders, metrics, learning rate scheduler, logger.
+        2. Wraps these objects using `accelerator.prepare(...)`
+        3. If a training checkpoint exists - loads it and initializes all the previously prepared objects from it.
+        4. Prints out total parameter count used for training
+        5. Trains for N epochs, where N specified in trainer config
+        6. While training, the trainer can save its state, run evaluation and log metrics, - it is specified in trainer config.
+
+        Args:
+            train_data: Dataset used for training
+            eval_data: Dataset used for evaluation. Can be `None` to disable evaluation.
+        """
         if self.accelerator.project_configuration.project_dir is None:
             self.accelerator.project_configuration.project_dir = '.'
         if self.config.logging_level is not None:

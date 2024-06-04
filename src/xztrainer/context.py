@@ -16,16 +16,29 @@ if t.TYPE_CHECKING:
 
 
 class ContextType(Enum):
-    TRAIN = 'train'
-    EVAL = 'eval'
-    INFERENCE = 'inference'
+    """
+    Context type object. Can be used for checking current environment.
+    """
 
+    TRAIN = 'train'
+    """Training context"""
+    EVAL = 'eval'
+    """Evaluation context"""
+    INFERENCE = 'inference'
+    """Inference context"""
 
 @dataclass
 class BaseContext(abc.ABC):
+    """Base context that contains fields shared across training, evaluation and inference context."""
+
     trainer: 'XZTrainer'
+    """Trainer instance"""
+
     data_loader: DataLoader
+    """DataLoader instance"""
+
     model: nn.Module
+    """Model instance. The model is wrapped using Accelerate"""
 
     @property
     @abc.abstractmethod
@@ -35,18 +48,36 @@ class BaseContext(abc.ABC):
 
 @dataclass
 class BaseTrainContext(BaseContext):
+    """Base train context that contains fields shared across training and evaluation context."""
+
     logger: AccelerateLogger
+    """Logger instance"""
+
     optimizer: Optimizer
+    """Optimizer instance"""
+
     scheduler: LRSchedulerProtocol
+    """Learning rate scheduler instance"""
+
     model_unwrapped: nn.Module
+    """Model instance. The model is not wrapped using Accelerate."""
+
     train_state: 'XZTrainState'
+    """Custom state used by trainer"""
 
 
 @dataclass
 class TrainContext(BaseTrainContext):
+    """Context used for training"""
+
     sync_steps: int
+    """Total count of training steps"""
+
     progress_bar: tqdm
+    """Progress bar used for displaying progress"""
+
     evaluate_data_loader: t.Union[DataLoader, None]
+    """Evaluation DataLoader instance"""
 
     @property
     def context_type(self) -> ContextType:
@@ -64,6 +95,8 @@ class TrainContext(BaseTrainContext):
 
 @dataclass
 class EvalContext(BaseTrainContext):
+    """Context used for evaluation"""
+
     @classmethod
     def from_train_context(cls: 'EvalContext', context: TrainContext):
         return cls(
@@ -83,6 +116,8 @@ class EvalContext(BaseTrainContext):
 
 
 class InferContext(BaseContext):
+    """Context used for inference"""
+
     @property
     def context_type(self) -> ContextType:
         return ContextType.INFERENCE

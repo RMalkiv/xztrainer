@@ -8,6 +8,16 @@ from xztrainer.model import ModelOutputType, DataType
 
 
 def detach_tensor(output: ModelOutputType, move_to_cpu: bool) -> ModelOutputType:
+    """
+    Recursively detaches each tensor in a model output structure.
+
+    Args:
+        output: Model output to detach tensors in
+        move_to_cpu: Whether to move a tensor to CPU after detaching
+
+    Returns:
+
+    """
     if isinstance(output, Tensor):
         output = output.detach()
         if move_to_cpu:
@@ -22,6 +32,15 @@ def detach_tensor(output: ModelOutputType, move_to_cpu: bool) -> ModelOutputType
 
 
 def move_data_to_device(data: Any, accelerator: Accelerator) -> DataType:
+    """
+    Recursively moves each tensor in a data structure to device specified by `Accelerator` object.
+    Args:
+        data: Structure to move tensors in
+        accelerator: `Accelerator` object
+
+    Returns:
+
+    """
     if isinstance(data, Tensor):
         return data.to(accelerator.device)
     elif isinstance(data, OrderedDict):
