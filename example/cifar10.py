@@ -6,6 +6,7 @@ from torch import Tensor
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
+from torch.utils.data import Dataset
 from torchmetrics import Metric, Accuracy
 from torchvision.datasets import CIFAR10
 from torchvision.models import resnet18
@@ -21,12 +22,11 @@ class SimpleTrainable(XZTrainable):
         self.loss = CrossEntropyLoss()
 
     def step(self, context: BaseContext, data: DataType) -> Tuple[Tensor, Dict[str, ModelOutputType]]:
-        img, label = data
-        logits = context.model(img)
+        logits = context.model(data['image'])
         preds = torch.argmax(logits, dim=1)
-        loss = self.loss(logits, label)
+        loss = self.loss(logits, data['label'])
 
-        return loss, {'predictions': preds, 'targets': label}
+        return loss, {'predictions': preds, 'targets': data['label']}
 
     def on_load(self, context: TrainContext, step: int):
         print(f'Next step will be: {step}')
@@ -51,36 +51,65 @@ class SimpleTrainable(XZTrainable):
         }
 
 
+class CifarDictDataset(Dataset):
+    def __init__(self, train: bool):
+        self.base_data = CIFAR10(root='./cifar10', download=True, train=train, transform=ToTensor())
+
+    def __getitem__(self, item):
+        image, label = self.base_data[item]
+        return {
+            'image': image,
+            'label': torch.scalar_tensor(label, dtype=torch.long)
+        }
+
+    def __len__(self):
+        return len(self.base_data)
+
+
+class CifarCollator:
+    def __call__(self, batch: list):
+        return {
+            'image': torch.stack([x['image'] for x in batch], dim=0),
+            'label': torch.stack([x['label'] for x in batch], dim=0)
+        }
+
+
 if __name__ == '__main__':
     set_seeds(0xCAFEBABE)
     enable_tf32()
 
-    dataset_train = CIFAR10(root='./cifar10', download=True, train=True, transform=ToTensor())
-    dataset_test = CIFAR10(root='./cifar10', download=True, train=False, transform=ToTensor())
+    dataset_train = CifarDictDataset(train=True)
+    dataset_test = CifarDictDataset(train=False)
 
+    accelerator = Accelerator(
+        gradient_accumulation_steps=32,
+        log_with='tensorboard',
+        project_dir='.'
+    )
+
+    config = XZTrainerConfig(
+        experiment_name='exp-2',
+        minibatch_size=32,
+        minibatch_size_eval=256,
+        epochs=10,
+        optimizer=lambda module: AdamW(module.parameters(), lr=1e-3, weight_decay=1e-4),
+        gradient_clipping=1.0,
+        scheduler=lambda optimizer, total_steps: OneCycleLR(optimizer, 1e-3, total_steps),
+        save_steps=100,
+        dataloader_persistent_workers=True,
+        dataloader_num_workers=8,
+        log_steps=10,
+        eval_steps=500,
+        tracker_config={'model_revision': 'resnet18'},
+        collate_fn=CifarCollator()
+    )
+
+    model = resnet18(weights=None, num_classes=10)
 
     trainer = XZTrainer(
-        config=XZTrainerConfig(
-            experiment_name='exp-2',
-            minibatch_size=32,
-            minibatch_size_eval=256,
-            epochs=10,
-            optimizer=lambda module: AdamW(module.parameters(), lr=1e-3, weight_decay=1e-4),
-            gradient_clipping=1.0,
-            scheduler=lambda optimizer, total_steps: OneCycleLR(optimizer, 1e-3, total_steps),
-            save_steps=100,
-            dataloader_persistent_workers=True,
-            dataloader_num_workers=8,
-            log_steps=10,
-            eval_steps=500,
-            tracker_config={'model_revision': 'resnet18'}
-        ),
-        model=resnet18(weights=None, num_classes=10),
+        config=config,
+        model=model,
         trainable=SimpleTrainable(),
-        accelerator=Accelerator(
-            gradient_accumulation_steps=32,
-            log_with='tensorboard',
-            project_dir='.'
-        )
+        accelerator=accelerator
     )
     trainer.train(dataset_train, dataset_test)

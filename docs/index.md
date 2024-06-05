@@ -87,6 +87,7 @@ You need to implement your standard PyTorch objects related to working with data
 An example [dataset](https://pytorch.org/docs/stable/data.html#dataset-types) that remaps standard torchvision CIFAR10 dataset from tuple-yielding to dictionary-yielding just for convenience.
 
 ```python
+import torch
 from torch.utils.data import Dataset
 from torchvision.datasets.cifar import CIFAR10
 from torchvision.transforms import ToTensor
@@ -99,7 +100,7 @@ class CifarDictDataset(Dataset):
         image, label = self.base_data[item]
         return {
             'image': image,
-            'label': label
+            'label': torch.scalar_tensor(label, dtype=torch.long)
         }
 
     def __len__(self):
