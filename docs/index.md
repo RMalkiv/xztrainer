@@ -35,12 +35,13 @@ enable_tf32()
 
 #### 3.2. Implement your Trainable
 
-You need to implement your custom training logic by subclassing a `XZTrainable` class.
+You need to implement your custom training logic by inheriting from a `XZTrainable` class.
 
 Trainable is used for:
-* forward pass code, including loss computation;
-* specifying what metrics you want to calculate while training (xztrainer uses torchmetrics for updating and calculating the metrics since it supports distributed metric computation out of the box, see [torchmetrics](https://lightning.ai/docs/torchmetrics/stable/) docs);
-* specifying some other callbacks, such as model loading callback or logging callback
+
+- forward pass code, including loss computation;
+- specifying what metrics you want to calculate while training (xztrainer uses torchmetrics for updating and calculating the metrics since it supports distributed metric computation out of the box, see [torchmetrics](https://lightning.ai/docs/torchmetrics/stable/) docs);
+- specifying some other callbacks, such as model loading callback or logging callback
 
 Use [xztrainer trainable docs](trainable.md) to see full list of functions you can implement in your Trainable.
 
@@ -215,4 +216,4 @@ trainer.train(train_data=CifarDictDataset(train=True), eval_data=CifarDictDatase
 Inside a `project_dir` you specified in a `Accelerator` configuration, you will see:
 
 * Saved checkpoints inside `checkpoint` directory
-* In case of logging enabled - logging artifacts in `runs` directory
+* In case of logging enabled (`log_with` parameter for `Accelerator`) - logging artifacts in `runs` directory
