@@ -16,6 +16,9 @@ ModelOutputsType = dict[str, ModelOutputType]
 DataType = t.Union[dict[str, t.Any], t.Iterable]
 """Type representing model input data. Can be a nested object of dictionaries, lists, sets, tuples containing arbitrary types such as tensors or strings."""
 
+TrackerConfigType = dict[str, t.Union[float, int, bool, str, None]]
+"""Type representing dictionary with parameters logged to experiment tracker"""
+
 
 class LRSchedulerProtocol(t.Protocol):
     """
@@ -159,7 +162,12 @@ class XZTrainerConfig:
 
     tracker_config: dict[str, t.Any] = field(default_factory=dict)
     """
-    Arbitrary config used for Accelerate experiment tracker. Directly passed to `accelerator.init_trackers(..., tracker_config)`. See [Accelerate docs](https://huggingface.co/docs/accelerate/en/usage_guides/tracking)
+    Arbitrary hyperparameters logged to experiment tracker.
+    """
+
+    tracker_init_kwargs: dict[str, t.Any] = field(default_factory=dict)
+    """
+    Arbitrary keyword arguments used for Accelerate experiment tracker. Directly passed to `accelerator.init_trackers(...)`. See [Accelerate docs](https://huggingface.co/docs/accelerate/en/usage_guides/tracking)
     """
 
     logging_level: t.Union[int, None] = logging.INFO

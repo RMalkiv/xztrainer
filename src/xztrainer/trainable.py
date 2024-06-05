@@ -5,7 +5,7 @@ from torch import Tensor
 from torchmetrics import Metric
 
 from xztrainer.context import BaseContext, ContextType, TrainContext, BaseTrainContext
-from xztrainer.model import DataType, ModelOutputsType
+from xztrainer.model import DataType, ModelOutputsType, TrackerConfigType
 
 
 class XZTrainable(ABC):
@@ -138,3 +138,16 @@ class XZTrainable(ABC):
             step: Current training step
         """
         pass
+
+    def tracker_config(self, context: TrainContext) -> TrackerConfigType:
+        """
+        Function returning additional hyperparameters that will be logged to experiment tracker. This function
+        is called once when training starts.
+
+        Args:
+            context: Current **train** context
+
+        Returns: Dictionary with additional parameter names and their values.
+
+        """
+        return {}

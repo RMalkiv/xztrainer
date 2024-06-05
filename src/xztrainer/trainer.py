@@ -1,5 +1,4 @@
 import math
-import math
 import re
 import shutil
 import typing as t
@@ -14,6 +13,7 @@ from torch import nn, Tensor
 from torch.utils.data import Dataset, DataLoader
 from torchmetrics import Metric
 
+from xztrainer.auto_tracker_config import create_tracker_config
 from xztrainer.context import ContextType, TrainContext, BaseContext, BaseTrainContext, EvalContext
 from xztrainer.functional import count_parameters
 from xztrainer.logger import AccelerateLogger
@@ -327,7 +327,6 @@ class XZTrainer:
         additional_state = XZTrainState(self.accelerator, metrics_print, metrics_train, metrics_eval)
         self.accelerator.register_for_checkpointing(additional_state)
 
-        self.accelerator.init_trackers(self.config.experiment_name, config=self.config.tracker_config)
         self._load()
         start_epoch = additional_state.current_epoch
 
@@ -366,6 +365,11 @@ class XZTrainer:
                     train_state=additional_state
                 )
                 if epoch == start_epoch:
+                    self.accelerator.init_trackers(
+                        self.config.experiment_name,
+                        config=create_tracker_config(context),
+                        init_kwargs=self.config.tracker_init_kwargs
+                    )
                     self.trainable.on_load(context, additional_state.passed_steps + 1)
                 self._train_epoch(context)
         self.accelerator.end_training()
