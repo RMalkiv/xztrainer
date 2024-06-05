@@ -279,7 +279,7 @@ class XZTrainer:
             context.logger.update_time_step(context.train_state.current_epoch)
             self._log_trainable(context, context.train_state.train_metrics)
 
-    def train(self, train_data: Dataset, eval_data: Dataset | None):
+    def train(self, train_data: Dataset, eval_data: t.Optional[Dataset]):
         """
         This function:
 
