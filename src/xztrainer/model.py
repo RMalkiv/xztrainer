@@ -170,6 +170,11 @@ class XZTrainerConfig:
     Arbitrary keyword arguments used for Accelerate experiment tracker. Directly passed to `accelerator.init_trackers(...)`. See [Accelerate docs](https://huggingface.co/docs/accelerate/en/usage_guides/tracking)
     """
 
+    tracker_logging_dir: t.Optional[str] = None
+    """
+    Logging directory (or remote address) for Accelerate experiment tracker. If `None` - it will be set to `{project_dir}/runs` automatically.
+    """
+
     logging_level: t.Union[int, None] = logging.INFO
     """
     Logging level that xztrainer initializes Python loggers with. Set to `None` to make xztrainer not do anything with Python loggers.

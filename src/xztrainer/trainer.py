@@ -299,9 +299,12 @@ class XZTrainer:
         if self.config.logging_level is not None:
             basicConfig(format='%(asctime)s [%(name)s] [%(levelname)s] %(message)s', level=self.config.logging_level)
 
-        log_dir = Path(self.accelerator.project_configuration.project_dir) / 'runs'
-        log_dir.mkdir(parents=True, exist_ok=True)
-        self.accelerator.project_configuration.logging_dir = str(log_dir)
+        if self.config.tracker_logging_dir is None:
+            log_dir = Path(self.accelerator.project_configuration.project_dir) / 'runs'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self.accelerator.project_configuration.logging_dir = str(log_dir)
+        else:
+            self.accelerator.project_configuration.logging_dir = self.config.tracker_logging_dir
 
         # Initialize and wrap model, optimizer and scheduler
         optim = self.config.optimizer(self.model)
