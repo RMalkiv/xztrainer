@@ -1,9 +1,12 @@
 import abc
+import typing
 from abc import ABC, abstractmethod
 
 from torch import Tensor
 from torchmetrics import Metric
 
+if typing.TYPE_CHECKING:
+    from xztrainer import XZTrainer
 from xztrainer.context import BaseContext, ContextType, TrainContext, BaseTrainContext
 from xztrainer.model import DataType, ModelOutputsType, TrackerConfigType
 
@@ -151,3 +154,12 @@ class XZTrainable(ABC):
 
         """
         return {}
+
+    def on_register_objects(self, trainer: 'XZTrainer'):
+        """
+        Callback that is called **after** preparing training pipeline objects with Accelerate and registering
+        trainer state for checkpointing. You can register your custom objects for checkpointing here.
+        Args:
+            trainer: Trainer instance.
+        """
+        pass

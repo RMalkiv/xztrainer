@@ -330,6 +330,8 @@ class XZTrainer:
         additional_state = XZTrainState(self.accelerator, metrics_print, metrics_train, metrics_eval)
         self.accelerator.register_for_checkpointing(additional_state)
 
+        self.trainable.on_register_objects(self)
+
         self._load()
         start_epoch = additional_state.current_epoch
 
