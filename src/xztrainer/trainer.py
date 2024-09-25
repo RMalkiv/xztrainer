@@ -308,7 +308,10 @@ class XZTrainer:
 
         # Initialize and wrap model, optimizer and scheduler
         optim = self.config.optimizer(self.model)
-        train_dl = self._create_dataloader(train_data, batch_size=self.config.minibatch_size)
+        train_dl = self._create_dataloader(
+            train_data,
+            batch_size=self.config.minibatch_size,
+            shuffle=self.config.dataloader_shuffle_train_dataset)
         sync_steps_per_epoch_unscaled = int(math.ceil(len(train_dl) / self.accelerator.gradient_accumulation_steps))
         sync_steps_unscaled = sync_steps_per_epoch_unscaled * self.config.epochs
         scheduler = self.config.scheduler(optim, sync_steps_unscaled)
